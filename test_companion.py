@@ -6,7 +6,6 @@ Tests orchestrate a real server and multiple clients
 
 import json
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -28,7 +27,7 @@ class FileShareE2ETest(unittest.TestCase):
         # Start server in background
         cls.server_process = subprocess.Popen(
             [
-                sys.executable,
+                "python3",
                 "companion.py",
                 "server",
                 "--port",
@@ -90,7 +89,7 @@ class FileShareE2ETest(unittest.TestCase):
             # Upload using client
             result = subprocess.run(
                 [
-                    sys.executable,
+                    "python3",
                     "companion.py",
                     "client",
                     self.server_url,
@@ -127,7 +126,7 @@ class FileShareE2ETest(unittest.TestCase):
         try:
             result = subprocess.run(
                 [
-                    sys.executable,
+                    "python3",
                     "companion.py",
                     "client",
                     self.server_url,
@@ -212,7 +211,7 @@ class FileShareE2ETest(unittest.TestCase):
             for test_file in test_files:
                 proc = subprocess.Popen(
                     [
-                        sys.executable,
+                        "python3",
                         "companion.py",
                         "client",
                         self.server_url,
@@ -259,7 +258,7 @@ class FileShareE2ETest(unittest.TestCase):
             # Upload
             result = subprocess.run(
                 [
-                    sys.executable,
+                    "python3",
                     "companion.py",
                     "client",
                     self.server_url,
@@ -307,7 +306,7 @@ class FileShareE2ETest(unittest.TestCase):
                 # Upload
                 result = subprocess.run(
                     [
-                        sys.executable,
+                        "python3",
                         "companion.py",
                         "client",
                         self.server_url,
@@ -346,7 +345,7 @@ class FileShareE2ETest(unittest.TestCase):
             # Upload
             result = subprocess.run(
                 [
-                    sys.executable,
+                    "python3",
                     "companion.py",
                     "client",
                     self.server_url,
