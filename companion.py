@@ -374,10 +374,11 @@ def run_server(port: int, api_key: str):
     global API_KEY
     API_KEY = api_key
 
-    server_address = ("", port)
+    # Bind to localhost explicitly (IPv4) for maximum compatibility
+    server_address = ("127.0.0.1", port)
     httpd = http.server.HTTPServer(server_address, FileShareHandler)
 
-    print(f"🚀 File sharing server running on http://0.0.0.0:{port}")
+    print(f"🚀 File sharing server running on http://127.0.0.1:{port}")
     print(f"🔑 API Key: {api_key}")
     print(f"📝 Open http://localhost:{port} in your browser")
     print("Press Ctrl+C to stop\n")
