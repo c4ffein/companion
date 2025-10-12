@@ -13,7 +13,6 @@ import json
 import logging
 import mimetypes
 import os
-import socket
 import sys
 import urllib.parse
 import urllib.request
