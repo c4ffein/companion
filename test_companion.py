@@ -35,6 +35,7 @@ class FileShareE2ETest(unittest.TestCase):
                 str(cls.port),
                 "--api-key",
                 cls.api_key,
+                "--debug",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
