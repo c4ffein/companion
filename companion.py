@@ -23,7 +23,7 @@ from typing import Dict, Tuple
 # In-memory file storage: {filename: (content_bytes, mimetype, upload_time)}
 FILES: Dict[str, Tuple[bytes, str, str]] = {}
 FILES_LOCK = Lock()
-API_KEY = "secret"
+API_KEY = None  # Must be set via command line
 
 
 class FileShareHandler(http.server.BaseHTTPRequestHandler):
@@ -454,7 +454,7 @@ def main():
         "--port", type=int, default=8080, help="Port to listen on (default: 8080)"
     )
     server_parser.add_argument(
-        "--api-key", default="secret", help="API key for uploads (default: secret)"
+        "--api-key", required=True, help="API key for uploads (required)"
     )
 
     # Client mode
@@ -466,7 +466,7 @@ def main():
     )
     client_parser.add_argument("file_path", help="Path to file to upload")
     client_parser.add_argument(
-        "--api-key", default="secret", help="API key for upload (default: secret)"
+        "--api-key", required=True, help="API key for upload (required)"
     )
 
     args = parser.parse_args()

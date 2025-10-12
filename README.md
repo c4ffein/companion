@@ -2,9 +2,6 @@
 
 A minimal, single-file Python tool for ephemeral file sharing on local networks. Share files seamlessly between your devices - your phone, TV, laptop, and more.
 
-## URGENT TODO
-- no default secret key, fail instead
-
 ## Features
 
 - **Single file**: Just `companion.py` - easy to audit and deploy, works as both server and client
