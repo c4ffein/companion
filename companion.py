@@ -523,6 +523,7 @@ if __name__ == "__main__":
     # Force UTF-8 encoding on Windows for emoji support
     if sys.platform == "win32":
         import codecs
+
         sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
         sys.stderr = codecs.getwriter("utf-8")(sys.stderr.detach())
     main()
