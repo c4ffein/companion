@@ -19,16 +19,16 @@ from pathlib import Path
 class FileShareE2ETest(unittest.TestCase):
     """End-to-end tests with real server and clients"""
 
+    # Environment with UTF-8 encoding for subprocesses
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
     @classmethod
     def setUpClass(cls):
         """Start the file share server"""
         cls.port = 8765
         cls.api_key = "test-api-key-123"
         cls.server_url = f"http://localhost:{cls.port}"
-
-        # Set up environment for subprocess with UTF-8 encoding on Windows
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
 
         # Start server in background
         cls.server_process = subprocess.Popen(
@@ -45,7 +45,8 @@ class FileShareE2ETest(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
+            encoding="utf-8",
+            env=cls.env,
         )
 
         # Wait for server to be ready
@@ -121,7 +122,9 @@ class FileShareE2ETest(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=10,
+                env=self.env,
             )
 
             self.assertEqual(result.returncode, 0, f"Client failed: {result.stderr}")
@@ -158,7 +161,9 @@ class FileShareE2ETest(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=10,
+                env=self.env,
             )
 
             self.assertNotEqual(result.returncode, 0)
@@ -244,6 +249,8 @@ class FileShareE2ETest(unittest.TestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    encoding="utf-8",
+                    env=self.env,
                 )
                 processes.append(proc)
 
@@ -290,7 +297,9 @@ class FileShareE2ETest(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=10,
+                env=self.env,
             )
 
             self.assertEqual(result.returncode, 0)
@@ -377,7 +386,9 @@ class FileShareE2ETest(unittest.TestCase):
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=10,
+                env=self.env,
             )
 
             self.assertEqual(result.returncode, 0)
