@@ -10,6 +10,7 @@ import argparse
 import http.server
 import io
 import json
+import logging
 import mimetypes
 import os
 import sys
@@ -24,6 +25,9 @@ from typing import Dict, Tuple
 FILES: Dict[str, Tuple[bytes, str, str]] = {}
 FILES_LOCK = Lock()
 API_KEY = None  # Must be set via command line
+
+# Setup logger
+logger = logging.getLogger("companion")
 
 
 class FileShareHandler(http.server.BaseHTTPRequestHandler):
@@ -374,8 +378,15 @@ def run_server(port: int, api_key: str):
     global API_KEY
     API_KEY = api_key
 
-    server_address = ("", port)
+    logger.debug(f"Starting server on port {port}...")
+    logger.debug(f"Binding to 0.0.0.0:{port}")
+
+    server_address = ("0.0.0.0", port)
     httpd = http.server.HTTPServer(server_address, FileShareHandler)
+
+    logger.debug("Server bound successfully")
+    logger.info(f"File sharing server running on http://0.0.0.0:{port}")
+    logger.info(f"API Key: {api_key}")
 
     print(f"🚀 File sharing server running on http://0.0.0.0:{port}")
     print(f"🔑 API Key: {api_key}")
@@ -456,6 +467,9 @@ def main():
     server_parser.add_argument(
         "--api-key", required=True, help="API key for uploads (required)"
     )
+    server_parser.add_argument(
+        "--debug", action="store_true", help="Enable debug logging"
+    )
 
     # Client mode
     client_parser = subparsers.add_parser(
@@ -476,6 +490,13 @@ def main():
         sys.exit(1)
 
     if args.mode == "server":
+        # Configure logging
+        log_level = logging.DEBUG if args.debug else logging.INFO
+        logging.basicConfig(
+            level=log_level,
+            format="[%(asctime)s] %(levelname)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
         run_server(args.port, args.api_key)
     elif args.mode == "client":
         success = upload_file(args.server_url, args.file_path, args.api_key)
