@@ -5,6 +5,7 @@ Tests orchestrate a real server and multiple clients
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,10 @@ class FileShareE2ETest(unittest.TestCase):
         cls.api_key = "test-api-key-123"
         cls.server_url = f"http://localhost:{cls.port}"
 
+        # Set up environment for subprocess with UTF-8 encoding on Windows
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+
         # Start server in background
         cls.server_process = subprocess.Popen(
             [
@@ -40,6 +45,7 @@ class FileShareE2ETest(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
 
         # Wait for server to be ready
@@ -415,7 +421,11 @@ def run_tests():
 
 
 if __name__ == "__main__":
-    import sys
+    # Force UTF-8 encoding on Windows for emoji support
+    if sys.platform == "win32":
+        import codecs
+        sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
+        sys.stderr = codecs.getwriter("utf-8")(sys.stderr.detach())
 
     success = run_tests()
     sys.exit(0 if success else 1)
