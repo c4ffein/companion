@@ -23,7 +23,7 @@ class FileShareE2ETest(unittest.TestCase):
         """Start the file share server"""
         cls.port = 8765
         cls.api_key = "test-api-key-123"
-        cls.server_url = f"http://localhost:{cls.port}"
+        cls.server_url = f"http://127.0.0.1:{cls.port}"
 
         # Start server in background
         cls.server_process = subprocess.Popen(
