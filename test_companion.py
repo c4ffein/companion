@@ -6,6 +6,7 @@ Tests orchestrate a real server and multiple clients
 
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -43,6 +44,15 @@ class FileShareE2ETest(unittest.TestCase):
         # Wait for server to be ready
         max_retries = 20
         for i in range(max_retries):
+            # Check if process has died
+            if cls.server_process.poll() is not None:
+                stdout, stderr = cls.server_process.communicate()
+                raise Exception(
+                    f"Server process exited with code {cls.server_process.returncode}\n"
+                    f"Stdout: {stdout}\n"
+                    f"Stderr: {stderr}"
+                )
+
             try:
                 urllib.request.urlopen(f"{cls.server_url}/", timeout=1)
                 print(f"✓ Server ready on port {cls.port}")
@@ -50,7 +60,12 @@ class FileShareE2ETest(unittest.TestCase):
             except (urllib.error.URLError, OSError):
                 if i == max_retries - 1:
                     cls.server_process.kill()
-                    raise Exception("Server failed to start")
+                    stdout, stderr = cls.server_process.communicate(timeout=1)
+                    raise Exception(
+                        f"Server failed to start (still running but not responding)\n"
+                        f"Stdout: {stdout}\n"
+                        f"Stderr: {stderr}"
+                    )
                 time.sleep(0.5)
 
     @classmethod
