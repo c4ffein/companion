@@ -13,6 +13,7 @@ import json
 import logging
 import mimetypes
 import os
+import socket
 import sys
 import urllib.parse
 import urllib.request
@@ -382,7 +383,23 @@ def run_server(port: int, api_key: str):
     logger.debug(f"Binding to 0.0.0.0:{port}")
 
     server_address = ("0.0.0.0", port)
-    httpd = http.server.HTTPServer(server_address, FileShareHandler)
+
+    class FastHTTPServer(http.server.HTTPServer):
+        """HTTPServer that skips slow getfqdn() call during binding"""
+
+        def server_bind(self):
+            """Override server_bind to avoid slow getfqdn() call on macOS/Windows"""
+            logger.debug("Binding socket...")
+            self.socket.bind(self.server_address)
+            self.server_address = self.socket.getsockname()
+            # Skip the slow socket.getfqdn() call - just use the host directly
+            host, port = self.server_address[:2]
+            self.server_name = host
+            self.server_port = port
+            logger.debug(f"Socket bound to {host}:{port}")
+
+    logger.debug("Creating HTTPServer instance...")
+    httpd = FastHTTPServer(server_address, FileShareHandler)
 
     logger.debug("Server bound successfully")
     logger.info(f"File sharing server running on http://0.0.0.0:{port}")
