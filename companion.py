@@ -305,7 +305,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         let autoRefreshInterval = null;
         let localPreviewTimestamp = 0;
 
-        function switchTab(tab) {
+        // Make functions globally accessible for onclick handlers
+        window.switchTab = function(tab) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.nav-button').forEach(el => el.classList.remove('active'));
@@ -321,7 +322,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 document.getElementById('previewTab').classList.add('active');
                 document.querySelectorAll('.nav-button')[2].classList.add('active');
             }
-        }
+        };
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 Bytes';
@@ -336,7 +337,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return date.toLocaleString();
         }
 
-        async function loadFiles() {
+        window.loadFiles = async function() {
             try {
                 const response = await fetch('/api/files');
                 const files = await response.json();
@@ -364,7 +365,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 document.getElementById('fileList').innerHTML =
                     '<div class="empty-state">Error loading files</div>';
             }
-        }
+        };
 
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -372,13 +373,13 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return div.innerHTML;
         }
 
-        function downloadFile(filename) {
+        window.downloadFile = function(filename) {
             window.location.href = '/download/' + encodeURIComponent(filename);
-        }
+        };
 
         let currentPreviewFilename = null;
 
-        function previewFile(filename, mimetype) {
+        window.previewFile = function(filename, mimetype) {
             const previewContent = document.getElementById('previewContent');
             const previewFileName = document.getElementById('previewFileName');
             const previewDownloadBtn = document.getElementById('previewDownloadBtn');
@@ -423,13 +424,13 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             }
 
             switchTab('preview');
-        }
+        };
 
-        function downloadCurrentPreview() {
+        window.downloadCurrentPreview = function() {
             if (currentPreviewFilename) {
                 downloadFile(currentPreviewFilename);
             }
-        }
+        };
 
         function showStatus(message, isError = false) {
             const statusDiv = document.getElementById('uploadStatus');
@@ -510,7 +511,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             }
         });
 
-        function toggleAutoRefresh() {
+        window.toggleAutoRefresh = function() {
             const checkbox = document.getElementById('autoRefresh');
             const refreshBtn = document.getElementById('refreshBtn');
 
@@ -524,7 +525,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 }
                 refreshBtn.style.display = 'inline-block';
             }
-        }
+        };
 
         async function checkPreviewUpdate() {
             try {
