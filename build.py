@@ -59,15 +59,10 @@ def build_companion():
     # Create inline scripts
     print("\n🔄 Creating inline scripts...")
 
-    # Escape the JavaScript content for embedding in Python string
-    pdf_js_escaped = (
-        pdf_js_content.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
-    )
-    pdf_worker_escaped = (
-        pdf_worker_content.replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("${", "\\${")
-    )
+    # Escape JavaScript content properly for Python string literal
+    # Use repr() which handles all escaping correctly for Python strings
+    pdf_js_escaped = repr(pdf_js_content)
+    pdf_worker_escaped = repr(pdf_worker_content)
 
     # Remove the CDN script tag
     source = re.sub(
@@ -81,15 +76,14 @@ def build_companion():
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs';"""
 
     new_inline = f"""// Inline PDF.js (built version)
-        const pdfjsCode = `{pdf_js_escaped}`;
-        const pdfjsWorkerCode = `{pdf_worker_escaped}`;
+        const pdfjsCode = {pdf_js_escaped};
+        const pdfjsWorkerCode = {pdf_worker_escaped};
 
         // Create blob URL for worker
         const workerBlob = new Blob([pdfjsWorkerCode], {{ type: 'application/javascript' }});
         const workerBlobURL = URL.createObjectURL(workerBlob);
 
         // Execute PDF.js code to get pdfjsLib
-        const pdfjsBlob = new Blob([pdfjsCode + ';window.pdfjsLib=pdfjsLib;'], {{ type: 'application/javascript' }});
         const pdfjs_script = document.createElement('script');
         pdfjs_script.type = 'module';
         pdfjs_script.textContent = pdfjsCode + '\\nwindow.pdfjsLib=pdfjsLib;pdfjsLib.GlobalWorkerOptions.workerSrc=\\'' + workerBlobURL + '\\';';
