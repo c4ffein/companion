@@ -1,9 +1,12 @@
-.PHONY: help test format lint check clean run build verify-build
+.PHONY: help test test-dev test-built test-all format lint check clean run build verify-build
 
 # Default target
 help:
 	@echo "Available targets:"
-	@echo "  make test         - Run all tests"
+	@echo "  make test         - Run tests on dev version (default)"
+	@echo "  make test-dev     - Run tests on dev version (src/companion.py)"
+	@echo "  make test-built   - Run tests on built version (companion.py)"
+	@echo "  make test-all     - Run tests on both dev and built versions"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make lint         - Lint code with ruff"
 	@echo "  make check        - Run format, lint, and tests"
@@ -12,10 +15,22 @@ help:
 	@echo "  make run          - Start the server (default port 8080)"
 	@echo "  make clean        - Remove Python cache files"
 
-# Run tests
-test:
-	@echo "Running tests..."
-	python3 test_companion.py
+# Run tests on dev version (default)
+test: test-dev
+
+# Run tests on dev version
+test-dev:
+	@echo "🧪 Running tests on DEV version..."
+	TEST_VERSION=dev python3 test_companion.py
+
+# Run tests on built version
+test-built:
+	@echo "🧪 Running tests on BUILT version..."
+	TEST_VERSION=built python3 test_companion.py
+
+# Run tests on both versions
+test-all: test-dev test-built
+	@echo "✅ All tests passed on both versions!"
 
 # Format code with ruff
 format:
