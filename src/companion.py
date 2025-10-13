@@ -239,9 +239,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 <div class="empty-state">Loading...</div>
             </div>
             <div style="margin-top: 15px;">
-                <button id="refreshBtn" onclick="loadFiles()" class="btn-secondary" style="display: none;">Refresh</button>
+                <button id="refreshBtn" class="btn-secondary" style="display: none;">Refresh</button>
                 <label style="margin-left: 15px;">
-                    <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()" checked>
+                    <input type="checkbox" id="autoRefresh" checked>
                     Auto-refresh
                 </label>
             </div>
@@ -251,7 +251,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     <div id="previewTab" class="tab-content">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h2 id="previewFileName" style="margin: 0;">Preview</h2>
-            <button id="previewDownloadBtn" onclick="downloadCurrentPreview()" style="display: none;">Download</button>
+            <button id="previewDownloadBtn" style="display: none;">Download</button>
         </div>
         <div id="previewContent" class="preview-container">
             <div class="empty-state">Select a file to preview</div>
@@ -259,9 +259,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     </div>
 
     <div class="bottom-nav">
-        <button class="nav-button active" onclick="switchTab('upload')">Upload</button>
-        <button class="nav-button" onclick="switchTab('files')">Files</button>
-        <button class="nav-button" onclick="switchTab('preview')">Preview</button>
+        <button class="nav-button active" data-tab="upload">Upload</button>
+        <button class="nav-button" data-tab="files">Files</button>
+        <button class="nav-button" data-tab="preview">Preview</button>
     </div>
 
     <script type="module">
@@ -269,20 +269,18 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs';
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs';
 
-        // Make pdfjsLib available globally
-        window.pdfjsLib = pdfjsLib;
-
-        // PDF state
-        window.pdfDoc = null;
-        window.pageNum = 1;
-        window.pageRendering = false;
-        window.pageNumPending = null;
+        // PDF state (module-level)
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
 
         let autoRefreshInterval = null;
         let localPreviewTimestamp = 0;
+        let currentPreviewFilename = null;
 
-        // Make functions globally accessible for onclick handlers
-        window.switchTab = function(tab) {
+        // Tab switching
+        function switchTab(tab) {
             // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.nav-button').forEach(el => el.classList.remove('active'));
@@ -290,15 +288,15 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             // Show selected tab
             if (tab === 'upload') {
                 document.getElementById('uploadTab').classList.add('active');
-                document.querySelectorAll('.nav-button')[0].classList.add('active');
+                document.querySelector('[data-tab="upload"]').classList.add('active');
             } else if (tab === 'files') {
                 document.getElementById('filesTab').classList.add('active');
-                document.querySelectorAll('.nav-button')[1].classList.add('active');
+                document.querySelector('[data-tab="files"]').classList.add('active');
             } else if (tab === 'preview') {
                 document.getElementById('previewTab').classList.add('active');
-                document.querySelectorAll('.nav-button')[2].classList.add('active');
+                document.querySelector('[data-tab="preview"]').classList.add('active');
             }
-        };
+        }
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 Bytes';
@@ -313,7 +311,13 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return date.toLocaleString();
         }
 
-        window.loadFiles = async function() {
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function loadFiles() {
             try {
                 const response = await fetch('/api/files');
                 const files = await response.json();
@@ -332,8 +336,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                             <div class="file-meta">${formatBytes(file.size)} • ${formatDate(file.uploaded)}</div>
                         </div>
                         <div class="file-actions">
-                            <button onclick="previewFile('${escapeHtml(file.name)}', '${escapeHtml(file.mimetype)}')">Preview</button>
-                            <button onclick="downloadFile('${escapeHtml(file.name)}')">Download</button>
+                            <button data-action="preview" data-filename="${escapeHtml(file.name)}" data-mimetype="${escapeHtml(file.mimetype)}">Preview</button>
+                            <button data-action="download" data-filename="${escapeHtml(file.name)}">Download</button>
                         </div>
                     </div>
                 `).join('');
@@ -341,21 +345,13 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 document.getElementById('fileList').innerHTML =
                     '<div class="empty-state">Error loading files</div>';
             }
-        };
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
         }
 
-        window.downloadFile = function(filename) {
+        function downloadFile(filename) {
             window.location.href = '/download/' + encodeURIComponent(filename);
-        };
+        }
 
-        let currentPreviewFilename = null;
-
-        window.previewFile = function(filename, mimetype) {
+        function previewFile(filename, mimetype) {
             const previewContent = document.getElementById('previewContent');
             const previewFileName = document.getElementById('previewFileName');
             const previewDownloadBtn = document.getElementById('previewDownloadBtn');
@@ -379,9 +375,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 // PDF preview using PDF.js
                 previewContent.innerHTML = `<canvas id="pdfCanvas" style="max-width: 100%; height: auto;"></canvas>
                     <div style="margin-top: 10px; text-align: center;">
-                        <button onclick="prevPage()" class="btn-secondary">Previous</button>
+                        <button data-action="pdf-prev" class="btn-secondary">Previous</button>
                         <span style="margin: 0 15px;">Page <span id="pageNum"></span> / <span id="pageCount"></span></span>
-                        <button onclick="nextPage()" class="btn-secondary">Next</button>
+                        <button data-action="pdf-next" class="btn-secondary">Next</button>
                     </div>`;
                 renderPDF(url);
             } else if (mimetype.startsWith('text/') || mimetype === 'application/json' || mimetype === 'application/javascript') {
@@ -400,13 +396,13 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             }
 
             switchTab('preview');
-        };
+        }
 
-        window.downloadCurrentPreview = function() {
+        function downloadCurrentPreview() {
             if (currentPreviewFilename) {
                 downloadFile(currentPreviewFilename);
             }
-        };
+        }
 
         function showStatus(message, isError = false) {
             const statusDiv = document.getElementById('uploadStatus');
@@ -418,6 +414,23 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             }, 5000);
         }
 
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            const refreshBtn = document.getElementById('refreshBtn');
+
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(loadFiles, 1000);
+                refreshBtn.style.display = 'none';
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+                refreshBtn.style.display = 'inline-block';
+            }
+        }
+
+        // Upload form handler
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -487,22 +500,6 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             }
         });
 
-        window.toggleAutoRefresh = function() {
-            const checkbox = document.getElementById('autoRefresh');
-            const refreshBtn = document.getElementById('refreshBtn');
-
-            if (checkbox.checked) {
-                autoRefreshInterval = setInterval(loadFiles, 1000);
-                refreshBtn.style.display = 'none';
-            } else {
-                if (autoRefreshInterval) {
-                    clearInterval(autoRefreshInterval);
-                    autoRefreshInterval = null;
-                }
-                refreshBtn.style.display = 'inline-block';
-            }
-        };
-
         async function checkPreviewUpdate() {
             try {
                 const response = await fetch('/api/preview/current');
@@ -521,9 +518,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         }
 
         // PDF.js rendering functions
-        window.renderPage = function(num) {
-            window.pageRendering = true;
-            window.pdfDoc.getPage(num).then(function(page) {
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then(function(page) {
                 const canvas = document.getElementById('pdfCanvas');
                 const ctx = canvas.getContext('2d');
                 const viewport = page.getViewport({scale: 1.5});
@@ -539,56 +536,110 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 const renderTask = page.render(renderContext);
 
                 renderTask.promise.then(function() {
-                    window.pageRendering = false;
-                    if (window.pageNumPending !== null) {
-                        window.renderPage(window.pageNumPending);
-                        window.pageNumPending = null;
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
                     }
                 });
             });
 
             document.getElementById('pageNum').textContent = num;
-        };
+        }
 
-        window.queueRenderPage = function(num) {
-            if (window.pageRendering) {
-                window.pageNumPending = num;
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
             } else {
-                window.renderPage(num);
+                renderPage(num);
             }
-        };
+        }
 
-        window.prevPage = function() {
-            if (window.pageNum <= 1) {
+        function prevPage() {
+            if (pageNum <= 1) {
                 return;
             }
-            window.pageNum--;
-            window.queueRenderPage(window.pageNum);
-        };
+            pageNum--;
+            queueRenderPage(pageNum);
+        }
 
-        window.nextPage = function() {
-            if (window.pageNum >= window.pdfDoc.numPages) {
+        function nextPage() {
+            if (pageNum >= pdfDoc.numPages) {
                 return;
             }
-            window.pageNum++;
-            window.queueRenderPage(window.pageNum);
-        };
+            pageNum++;
+            queueRenderPage(pageNum);
+        }
 
-        window.renderPDF = function(url) {
-            const loadingTask = window.pdfjsLib.getDocument(url);
+        function renderPDF(url) {
+            const loadingTask = pdfjsLib.getDocument(url);
             loadingTask.promise.then(function(pdfDoc_) {
-                window.pdfDoc = pdfDoc_;
-                document.getElementById('pageCount').textContent = window.pdfDoc.numPages;
+                pdfDoc = pdfDoc_;
+                document.getElementById('pageCount').textContent = pdfDoc.numPages;
 
                 // Initial/first page rendering
-                window.pageNum = 1;
-                window.renderPage(window.pageNum);
+                pageNum = 1;
+                renderPage(pageNum);
             }).catch(function(error) {
                 console.error('Error loading PDF:', error);
                 document.getElementById('previewContent').innerHTML =
                     '<div class="empty-state">Error loading PDF. Try downloading the file instead.</div>';
             });
-        };
+        }
+
+        // Event delegation for all button clicks
+        document.addEventListener('click', (e) => {
+            const target = e.target;
+
+            // Tab switching
+            if (target.classList.contains('nav-button') && target.dataset.tab) {
+                switchTab(target.dataset.tab);
+                return;
+            }
+
+            // File actions (preview/download)
+            if (target.dataset.action === 'preview') {
+                e.preventDefault();
+                previewFile(target.dataset.filename, target.dataset.mimetype);
+                return;
+            }
+
+            if (target.dataset.action === 'download') {
+                e.preventDefault();
+                downloadFile(target.dataset.filename);
+                return;
+            }
+
+            // PDF navigation
+            if (target.dataset.action === 'pdf-prev') {
+                e.preventDefault();
+                prevPage();
+                return;
+            }
+
+            if (target.dataset.action === 'pdf-next') {
+                e.preventDefault();
+                nextPage();
+                return;
+            }
+
+            // Preview download button
+            if (target.id === 'previewDownloadBtn') {
+                e.preventDefault();
+                downloadCurrentPreview();
+                return;
+            }
+
+            // Refresh button
+            if (target.id === 'refreshBtn') {
+                e.preventDefault();
+                loadFiles();
+                return;
+            }
+        });
+
+        // Auto-refresh checkbox
+        document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
 
         // Load files on page load
         loadFiles();

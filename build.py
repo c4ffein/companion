@@ -56,43 +56,82 @@ def build_companion():
     pdf_js_content = fetch_url(pdf_js_url, "js_deps/pdf.min.mjs")
     pdf_worker_content = fetch_url(pdf_worker_url, "js_deps/pdf.worker.min.mjs")
 
-    # Create inline scripts
-    print("\n🔄 Creating inline scripts...")
+    # Embed PDF.js files as Python string constants
+    print("\n🔄 Embedding PDF.js files as Python constants...")
 
-    # Escape JavaScript content properly for Python string literal
-    # Use repr() which handles all escaping correctly for Python strings
-    pdf_js_escaped = repr(pdf_js_content)
-    pdf_worker_escaped = repr(pdf_worker_content)
+    import json
 
-    # Remove the CDN script tag
+    # Escape the content for Python string literals
+    pdf_js_escaped = json.dumps(pdf_js_content)
+    pdf_worker_escaped = json.dumps(pdf_worker_content)
+
+    # Add embedded PDF.js constants at the top of the file, after imports
+    embedded_deps = f"""
+# Embedded PDF.js files for offline use (added by build.py)
+_PDFJS_LIB = {pdf_js_escaped}
+_PDFJS_WORKER = {pdf_worker_escaped}
+"""
+
+    # Insert after the imports section (after "from typing import Dict, Tuple")
+    source = source.replace(
+        "from typing import Dict, Tuple\n",
+        f"from typing import Dict, Tuple\n{embedded_deps}\n",
+    )
+
+    # Remove the PDF.js script tag from head (it will be imported in the module script instead)
     source = re.sub(
         r'    <!-- PDF\.js CDN - will be inlined in build -->\n    <script src="https://cdnjs\.cloudflare\.com/ajax/libs/pdf\.js/[^"]+/pdf\.min\.mjs" type="module"></script>\n',
         "",
         source,
     )
 
-    # Replace the import statements with inline code
-    old_import = """import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs';
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs';"""
+    # Replace CDN URLs with local /deps/ URLs (in the import statement)
+    source = source.replace(
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs",
+        "/deps/pdf.min.mjs",
+    )
+    source = source.replace(
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs",
+        "/deps/pdf.worker.min.mjs",
+    )
 
-    new_inline = f"""// Inline PDF.js (built version)
-        const pdfjsCode = {pdf_js_escaped};
-        const pdfjsWorkerCode = {pdf_worker_escaped};
+    # Add /deps/ routes to the HTTP handler
+    # Find the do_GET method and add routes there
+    deps_handler = """        # Serve embedded PDF.js dependencies (built version only)
+        if self.path == "/deps/pdf.min.mjs":
+            if "_PDFJS_LIB" in globals():
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                content_bytes = _PDFJS_LIB.encode("utf-8")
+                self.send_header("Content-Length", str(len(content_bytes)))
+                self.send_header("Cache-Control", "public, max-age=31536000")  # Cache for 1 year
+                self.end_headers()
+                self.wfile.write(content_bytes)
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+            return
 
-        // Create blob URL for worker
-        const workerBlob = new Blob([pdfjsWorkerCode], {{ type: 'application/javascript' }});
-        const workerBlobURL = URL.createObjectURL(workerBlob);
+        if self.path == "/deps/pdf.worker.min.mjs":
+            if "_PDFJS_WORKER" in globals():
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                content_bytes = _PDFJS_WORKER.encode("utf-8")
+                self.send_header("Content-Length", str(len(content_bytes)))
+                self.send_header("Cache-Control", "public, max-age=31536000")  # Cache for 1 year
+                self.end_headers()
+                self.wfile.write(content_bytes)
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+            return
 
-        // Execute PDF.js code to get pdfjsLib
-        const pdfjs_script = document.createElement('script');
-        pdfjs_script.type = 'module';
-        pdfjs_script.textContent = pdfjsCode + '\\nwindow.pdfjsLib=pdfjsLib;pdfjsLib.GlobalWorkerOptions.workerSrc=\\'' + workerBlobURL + '\\';';
-        document.head.appendChild(pdfjs_script);
+"""
 
-        // Wait a bit for pdfjsLib to be available
-        await new Promise(resolve => setTimeout(resolve, 100));"""
-
-    source = source.replace(old_import, new_inline)
+    # Insert deps routes at the beginning of do_GET method (after the docstring if any)
+    # Look for "def do_GET(self):" and insert after it
+    source = source.replace(
+        '    def do_GET(self):\n        """Handle GET requests"""\n',
+        f'    def do_GET(self):\n        """Handle GET requests"""\n{deps_handler}',
+    )
 
     # Update docstring to mark as built version
     print("\n📝 Adding built version marker to docstring...")

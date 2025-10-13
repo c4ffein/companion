@@ -776,6 +776,76 @@ class FileShareE2ETest(unittest.TestCase):
             for test_file in test_files:
                 Path(test_file).unlink()
 
+    def test_18_deps_pdfjs_lib_serves_exact_file(self):
+        """Test that /deps/pdf.min.mjs serves the exact cached PDF.js library (built version only)"""
+        # Skip this test for dev version (it uses CDN)
+        test_version = os.environ.get("TEST_VERSION", "dev")
+        if test_version != "built":
+            self.skipTest("This test only applies to the built version")
+
+        # Read the cached PDF.js library file
+        cache_path = Path("js_deps/pdf.min.mjs")
+        self.assertTrue(cache_path.exists(), "Cached PDF.js library not found")
+
+        with open(cache_path, "r", encoding="utf-8") as f:
+            expected_content = f.read()
+
+        # Fetch from /deps/ endpoint
+        response = urllib.request.urlopen(f"{self.server_url}/deps/pdf.min.mjs")
+        served_content = response.read().decode("utf-8")
+
+        # Verify they match exactly
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            len(served_content),
+            len(expected_content),
+            f"Size mismatch: served {len(served_content)} bytes, expected {len(expected_content)} bytes",
+        )
+        self.assertEqual(
+            served_content,
+            expected_content,
+            "Served PDF.js library does not match cached file",
+        )
+
+        # Verify content type header
+        content_type = response.headers.get("Content-Type")
+        self.assertIn("javascript", content_type.lower())
+
+    def test_19_deps_pdfjs_worker_serves_exact_file(self):
+        """Test that /deps/pdf.worker.min.mjs serves the exact cached PDF.js worker (built version only)"""
+        # Skip this test for dev version (it uses CDN)
+        test_version = os.environ.get("TEST_VERSION", "dev")
+        if test_version != "built":
+            self.skipTest("This test only applies to the built version")
+
+        # Read the cached PDF.js worker file
+        cache_path = Path("js_deps/pdf.worker.min.mjs")
+        self.assertTrue(cache_path.exists(), "Cached PDF.js worker not found")
+
+        with open(cache_path, "r", encoding="utf-8") as f:
+            expected_content = f.read()
+
+        # Fetch from /deps/ endpoint
+        response = urllib.request.urlopen(f"{self.server_url}/deps/pdf.worker.min.mjs")
+        served_content = response.read().decode("utf-8")
+
+        # Verify they match exactly
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            len(served_content),
+            len(expected_content),
+            f"Size mismatch: served {len(served_content)} bytes, expected {len(expected_content)} bytes",
+        )
+        self.assertEqual(
+            served_content,
+            expected_content,
+            "Served PDF.js worker does not match cached file",
+        )
+
+        # Verify content type header
+        content_type = response.headers.get("Content-Type")
+        self.assertIn("javascript", content_type.lower())
+
 
 def run_tests():
     """Run the test suite"""

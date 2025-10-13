@@ -1,4 +1,4 @@
-.PHONY: help test test-dev test-built test-all format lint check clean run build verify-build
+.PHONY: help test test-dev test-built test-all test-browser format lint check clean run build verify-build
 
 # Default target
 help:
@@ -7,6 +7,7 @@ help:
 	@echo "  make test-dev     - Run tests on dev version (src/companion.py)"
 	@echo "  make test-built   - Run tests on built version (companion.py)"
 	@echo "  make test-all     - Run tests on both dev and built versions"
+	@echo "  make test-browser - Run browser E2E tests with Playwright"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make lint         - Lint code with ruff"
 	@echo "  make check        - Run format, lint, and tests"
@@ -31,6 +32,13 @@ test-built:
 # Run tests on both versions
 test-all: test-dev test-built
 	@echo "✅ All tests passed on both versions!"
+
+# Run browser E2E tests with Playwright (using uvx)
+test-browser:
+	@echo "🌐 Running browser E2E tests..."
+	@echo "📦 Installing Playwright browsers (first time only)..."
+	uvx --from playwright --with playwright playwright install chromium 2>/dev/null || true
+	uvx --from playwright --with playwright python test_browser.py
 
 # Format code with ruff
 format:
