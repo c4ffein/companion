@@ -8,8 +8,10 @@ A minimal, single-file Python tool for ephemeral file sharing on local networks.
 - **Zero dependencies**: Python 3.7+ standard library only
 - **In-memory storage**: Ephemeral by design - files disappear on restart
 - **API key auth**: Simple Bearer token authentication for allowing uploads
-- **Web interface**: Clean, responsive UI with optional auto-refresh
-- **CLI client**: Upload files from command line
+- **Web interface**: Clean, responsive UI with tab navigation and auto-refresh
+- **File preview**: Preview images, videos, audio, PDFs, and text files in-browser
+- **Presentation mode**: Control what all clients see from the CLI
+- **CLI client**: Upload files, list files, and control previews from command line
 - **Tested**: Comprehensive E2E test suite included
 
 ## Quick Start
@@ -35,11 +37,25 @@ Open http://localhost:8080 in your browser to see the web interface.
 
 **Via Command Line:**
 ```bash
-# Upload to local server
-python companion.py client http://localhost:8080 myfile.pdf
+# Upload a file
+python companion.py upload http://localhost:8080 myfile.pdf --api-key mySecretKey123
 
-# Upload with custom API key
-python companion.py client http://localhost:8080 myfile.pdf --api-key mySecretKey123
+# Upload and automatically set as preview for all clients
+python companion.py upload http://localhost:8080 slides.pdf --api-key mySecretKey123 --set-preview
+```
+
+### List Files
+
+```bash
+# List all available files
+python companion.py list http://localhost:8080
+```
+
+### Control Presentation Mode
+
+```bash
+# Set what all connected clients see
+python companion.py set-preview http://localhost:8080 slides.pdf --api-key mySecretKey123
 ```
 
 ## Use Cases
@@ -111,11 +127,22 @@ make check   # Run all checks
 - Returns: `{"success": true, "filename": "file.txt", "size": 1234}`
 
 **GET /download/<filename>**
-- Download a file
-- Returns file content with appropriate Content-Type
+- Download or preview a file
+- Returns file content with appropriate Content-Type and inline disposition
+
+**GET /api/preview/current**
+- Get current preview state for all clients
+- Response: `{"filename": "file.txt", "timestamp": 1, "mimetype": "application/pdf"}`
+
+**POST /api/preview/set**
+- Set the current preview for all clients (presentation mode)
+- Requires `Authorization: Bearer <api-key>` header
+- Body: `{"filename": "file.txt"}`
+- Returns: `{"success": true, "filename": "file.txt", "timestamp": 1}`
 
 ## Roadmap
 
+- [ ] PDF.js integration for better mobile Safari support (with build tool to inline assets)
 - [ ] End-to-end encryption
 - [ ] File deletion API
 - [ ] Password-protected downloads

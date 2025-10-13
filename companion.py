@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Companion - Simple file sharing server/client
+Companion - Simple file sharing server and client
 Usage:
-    Server mode: python companion.py server [--port PORT] [--api-key KEY]
-    Client mode: python companion.py client <server_url> <file_path> [--api-key KEY]
+    Server:      python companion.py server [--port PORT] --api-key KEY
+    Upload:      python companion.py upload <server_url> <file_path> --api-key KEY [--set-preview]
+    List files:  python companion.py list <server_url>
+    Set preview: python companion.py set-preview <server_url> <filename> --api-key KEY
 """
 
 import argparse
@@ -25,6 +27,10 @@ from typing import Dict, Tuple
 FILES: Dict[str, Tuple[bytes, str, str]] = {}
 FILES_LOCK = Lock()
 API_KEY = None  # Must be set via command line
+
+# Preview state: current preview for all clients
+PREVIEW_STATE = {"filename": None, "timestamp": 0}
+PREVIEW_LOCK = Lock()
 
 # Setup logger
 logger = logging.getLogger("companion")
@@ -53,6 +59,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             self._serve_index()
         elif path == "/api/files":
             self._serve_file_list()
+        elif path == "/api/preview/current":
+            self._serve_preview_state()
         elif path.startswith("/download/"):
             filename = urllib.parse.unquote(path[10:])
             self._serve_file(filename)
@@ -62,7 +70,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests (file uploads)"""
-        if self.path == "/api/upload":
+        if self.path == "/api/preview/set":
+            self._handle_preview_set()
+        elif self.path == "/api/upload":
             if not self._check_api_key():
                 self._set_headers(HTTPStatus.UNAUTHORIZED, "application/json")
                 self.wfile.write(json.dumps({"error": "Invalid API key"}).encode())
@@ -158,10 +168,12 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; background: #f5f5f5; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 40px auto 80px; padding: 0 20px; background: #f5f5f5; }
         h1 { color: #333; }
-        .upload-form { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .file-list { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .tab-content { display: none; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .tab-content.active { display: block; }
+        .upload-form { margin: 0; }
+        .file-list { margin: 0; }
         .file-item { padding: 12px; margin: 8px 0; border: 1px solid #e0e0e0; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
         .file-info { flex: 1; }
         .file-name { font-weight: 600; color: #333; }
@@ -177,41 +189,100 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         .empty-state { text-align: center; color: #999; padding: 40px; }
+        .progress-container { display: none; margin: 10px 0; }
+        .progress-container.active { display: block; }
+        .progress-bar-bg { width: 100%; height: 24px; background: #e0e0e0; border-radius: 12px; overflow: hidden; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, #007bff, #0056b3); transition: width 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: 600; }
+        .preview-container { max-width: 100%; }
+        .preview-container img { max-width: 100%; height: auto; border-radius: 4px; }
+        .preview-container video { max-width: 100%; height: auto; border-radius: 4px; }
+        .preview-container audio { width: 100%; }
+        .preview-container pre { background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; max-height: 500px; }
+        .preview-container iframe { width: 100%; height: 600px; border: 1px solid #e0e0e0; border-radius: 4px; }
+        .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #e0e0e0; display: flex; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); }
+        .nav-button { flex: 1; padding: 16px; text-align: center; background: white; border: none; cursor: pointer; font-size: 16px; color: #666; transition: background 0.2s, color 0.2s; }
+        .nav-button:hover { background: #f5f5f5; }
+        .nav-button.active { color: #007bff; background: #f0f8ff; border-top: 3px solid #007bff; }
+        .nav-button:not(:last-child) { border-right: 1px solid #e0e0e0; }
     </style>
 </head>
 <body>
     <h1>📁 Companion</h1>
 
-    <div class="upload-form">
-        <h2>Upload File</h2>
-        <form id="uploadForm">
-            <div>
-                <input type="text" id="apiKey" placeholder="API Key" required>
+    <div id="uploadTab" class="tab-content active">
+        <div class="upload-form">
+            <h2>Upload File</h2>
+            <form id="uploadForm">
+                <div>
+                    <input type="text" id="apiKey" placeholder="API Key" required>
+                </div>
+                <div>
+                    <input type="file" id="fileInput" required>
+                </div>
+                <input type="submit" value="Upload">
+            </form>
+            <div id="progressContainer" class="progress-container">
+                <div class="progress-bar-bg">
+                    <div id="progressBar" class="progress-bar" style="width: 0%">0%</div>
+                </div>
             </div>
-            <div>
-                <input type="file" id="fileInput" required>
-            </div>
-            <input type="submit" value="Upload">
-        </form>
-        <div id="uploadStatus"></div>
+            <div id="uploadStatus"></div>
+        </div>
     </div>
 
-    <div class="file-list">
-        <h2>Available Files</h2>
-        <div id="fileList">
-            <div class="empty-state">Loading...</div>
+    <div id="filesTab" class="tab-content">
+        <div class="file-list">
+            <h2>Available Files</h2>
+            <div id="fileList">
+                <div class="empty-state">Loading...</div>
+            </div>
+            <div style="margin-top: 15px;">
+                <button id="refreshBtn" onclick="loadFiles()" class="btn-secondary" style="display: none;">Refresh</button>
+                <label style="margin-left: 15px;">
+                    <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()" checked>
+                    Auto-refresh
+                </label>
+            </div>
         </div>
-        <div style="margin-top: 15px;">
-            <button onclick="loadFiles()" class="btn-secondary">Refresh</button>
-            <label style="margin-left: 15px;">
-                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
-                Auto-refresh (5s)
-            </label>
+    </div>
+
+    <div id="previewTab" class="tab-content">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 id="previewFileName" style="margin: 0;">Preview</h2>
+            <button id="previewDownloadBtn" onclick="downloadCurrentPreview()" style="display: none;">Download</button>
         </div>
+        <div id="previewContent" class="preview-container">
+            <div class="empty-state">Select a file to preview</div>
+        </div>
+    </div>
+
+    <div class="bottom-nav">
+        <button class="nav-button active" onclick="switchTab('upload')">Upload</button>
+        <button class="nav-button" onclick="switchTab('files')">Files</button>
+        <button class="nav-button" onclick="switchTab('preview')">Preview</button>
     </div>
 
     <script>
         let autoRefreshInterval = null;
+        let localPreviewTimestamp = 0;
+
+        function switchTab(tab) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-button').forEach(el => el.classList.remove('active'));
+
+            // Show selected tab
+            if (tab === 'upload') {
+                document.getElementById('uploadTab').classList.add('active');
+                document.querySelectorAll('.nav-button')[0].classList.add('active');
+            } else if (tab === 'files') {
+                document.getElementById('filesTab').classList.add('active');
+                document.querySelectorAll('.nav-button')[1].classList.add('active');
+            } else if (tab === 'preview') {
+                document.getElementById('previewTab').classList.add('active');
+                document.querySelectorAll('.nav-button')[2].classList.add('active');
+            }
+        }
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 Bytes';
@@ -245,6 +316,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                             <div class="file-meta">${formatBytes(file.size)} • ${formatDate(file.uploaded)}</div>
                         </div>
                         <div class="file-actions">
+                            <button onclick="previewFile('${escapeHtml(file.name)}', '${escapeHtml(file.mimetype)}')">Preview</button>
                             <button onclick="downloadFile('${escapeHtml(file.name)}')">Download</button>
                         </div>
                     </div>
@@ -263,6 +335,55 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         function downloadFile(filename) {
             window.location.href = '/download/' + encodeURIComponent(filename);
+        }
+
+        let currentPreviewFilename = null;
+
+        function previewFile(filename, mimetype) {
+            const previewContent = document.getElementById('previewContent');
+            const previewFileName = document.getElementById('previewFileName');
+            const previewDownloadBtn = document.getElementById('previewDownloadBtn');
+            const url = '/download/' + encodeURIComponent(filename);
+
+            currentPreviewFilename = filename;
+            previewFileName.textContent = 'Preview: ' + filename;
+            previewDownloadBtn.style.display = 'block';
+
+            // Determine how to preview based on mimetype
+            if (mimetype.startsWith('image/')) {
+                // Image preview
+                previewContent.innerHTML = `<img src="${url}" alt="${escapeHtml(filename)}">`;
+            } else if (mimetype.startsWith('video/')) {
+                // Video preview
+                previewContent.innerHTML = `<video controls><source src="${url}" type="${mimetype}">Your browser does not support video playback.</video>`;
+            } else if (mimetype.startsWith('audio/')) {
+                // Audio preview
+                previewContent.innerHTML = `<audio controls><source src="${url}" type="${mimetype}">Your browser does not support audio playback.</audio>`;
+            } else if (mimetype === 'application/pdf') {
+                // PDF preview
+                previewContent.innerHTML = `<iframe src="${url}" type="application/pdf"></iframe>`;
+            } else if (mimetype.startsWith('text/') || mimetype === 'application/json' || mimetype === 'application/javascript') {
+                // Text preview
+                fetch(url)
+                    .then(response => response.text())
+                    .then(text => {
+                        previewContent.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
+                    })
+                    .catch(error => {
+                        previewContent.innerHTML = '<div class="empty-state">Error loading file preview</div>';
+                    });
+            } else {
+                // Unsupported type
+                previewContent.innerHTML = `<div class="empty-state">Preview not available for this file type<br><small>${escapeHtml(mimetype)}</small></div>`;
+            }
+
+            switchTab('preview');
+        }
+
+        function downloadCurrentPreview() {
+            if (currentPreviewFilename) {
+                downloadFile(currentPreviewFilename);
+            }
         }
 
         function showStatus(message, isError = false) {
@@ -290,43 +411,99 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             const formData = new FormData();
             formData.append('file', file);
 
+            // Show progress bar
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            progressContainer.classList.add('active');
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+
             try {
-                const response = await fetch('/api/upload', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': 'Bearer ' + apiKey
-                    },
-                    body: formData
+                // Use XMLHttpRequest for progress tracking
+                const xhr = new XMLHttpRequest();
+
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = Math.round((e.loaded / e.total) * 100);
+                        progressBar.style.width = percentComplete + '%';
+                        progressBar.textContent = percentComplete + '%';
+                    }
                 });
 
-                const result = await response.json();
+                xhr.addEventListener('load', () => {
+                    progressContainer.classList.remove('active');
 
-                if (response.ok) {
-                    showStatus('File uploaded successfully!');
-                    fileInput.value = '';
-                    loadFiles();
-                } else {
-                    showStatus(result.error || 'Upload failed', true);
-                }
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        const result = JSON.parse(xhr.responseText);
+                        showStatus('File uploaded successfully!');
+                        fileInput.value = '';
+                        loadFiles();
+                        // Switch to files tab after successful upload
+                        setTimeout(() => switchTab('files'), 500);
+                    } else {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            showStatus(result.error || 'Upload failed', true);
+                        } catch {
+                            showStatus('Upload failed', true);
+                        }
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    progressContainer.classList.remove('active');
+                    showStatus('Upload failed: Network error', true);
+                });
+
+                xhr.open('POST', '/api/upload');
+                xhr.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+                xhr.send(formData);
+
             } catch (error) {
+                progressContainer.classList.remove('active');
                 showStatus('Upload failed: ' + error.message, true);
             }
         });
 
         function toggleAutoRefresh() {
             const checkbox = document.getElementById('autoRefresh');
+            const refreshBtn = document.getElementById('refreshBtn');
+
             if (checkbox.checked) {
-                autoRefreshInterval = setInterval(loadFiles, 5000);
+                autoRefreshInterval = setInterval(loadFiles, 1000);
+                refreshBtn.style.display = 'none';
             } else {
                 if (autoRefreshInterval) {
                     clearInterval(autoRefreshInterval);
                     autoRefreshInterval = null;
                 }
+                refreshBtn.style.display = 'inline-block';
+            }
+        }
+
+        async function checkPreviewUpdate() {
+            try {
+                const response = await fetch('/api/preview/current');
+                const state = await response.json();
+
+                // If server timestamp is newer than our local timestamp, update preview
+                if (state.timestamp > localPreviewTimestamp && state.filename) {
+                    localPreviewTimestamp = state.timestamp;
+
+                    // Load the preview and switch to preview tab
+                    previewFile(state.filename, state.mimetype);
+                }
+            } catch (error) {
+                // Silently fail - don't spam console with errors
             }
         }
 
         // Load files on page load
         loadFiles();
+        // Start auto-refresh by default
+        toggleAutoRefresh();
+        // Start preview polling
+        setInterval(checkPreviewUpdate, 1000);
     </script>
 </body>
 </html>"""
@@ -350,7 +527,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(files).encode())
 
     def _serve_file(self, filename: str):
-        """Serve a file for download"""
+        """Serve a file for download or inline preview"""
         with FILES_LOCK:
             if filename not in FILES:
                 self._set_headers(HTTPStatus.NOT_FOUND)
@@ -362,11 +539,77 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         # Send headers manually (don't use _set_headers because we need additional headers)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mimetype)
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        # Use inline for preview support (PDFs, images, etc.), but keep filename for downloads
+        self.send_header("Content-Disposition", f'inline; filename="{filename}"')
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(content)
+
+    def _serve_preview_state(self):
+        """Serve current preview state"""
+        with PREVIEW_LOCK:
+            state = PREVIEW_STATE.copy()
+
+        # If there's a filename, get its mimetype
+        if state["filename"]:
+            with FILES_LOCK:
+                if state["filename"] in FILES:
+                    _, mimetype, _ = FILES[state["filename"]]
+                    state["mimetype"] = mimetype
+                else:
+                    # File was deleted, clear preview
+                    state["filename"] = None
+                    state["mimetype"] = None
+
+        self._set_headers(content_type="application/json")
+        self.wfile.write(json.dumps(state).encode())
+
+    def _handle_preview_set(self):
+        """Handle setting the preview state"""
+        if not self._check_api_key():
+            self._set_headers(HTTPStatus.UNAUTHORIZED, "application/json")
+            self.wfile.write(json.dumps({"error": "Invalid API key"}).encode())
+            return
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            data = json.loads(body.decode())
+            filename = data.get("filename")
+
+            if not filename:
+                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
+                self.wfile.write(json.dumps({"error": "filename is required"}).encode())
+                return
+
+            # Check if file exists
+            with FILES_LOCK:
+                if filename not in FILES:
+                    self._set_headers(HTTPStatus.NOT_FOUND, "application/json")
+                    self.wfile.write(json.dumps({"error": "File not found"}).encode())
+                    return
+
+            # Update preview state atomically
+            with PREVIEW_LOCK:
+                PREVIEW_STATE["filename"] = filename
+                PREVIEW_STATE["timestamp"] += 1
+
+            self._set_headers(HTTPStatus.OK, "application/json")
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "success": True,
+                        "filename": filename,
+                        "timestamp": PREVIEW_STATE["timestamp"],
+                    }
+                ).encode()
+            )
+
+        except (json.JSONDecodeError, KeyError):
+            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
+            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
 
     def log_message(self, format, *args):
         """Override to customize logging"""
@@ -384,11 +627,17 @@ def run_server(port: int, api_key: str):
     server_address = ("0.0.0.0", port)
 
     class FastHTTPServer(http.server.HTTPServer):
-        """HTTPServer that skips slow getfqdn() call during binding"""
+        """HTTPServer that skips slow getfqdn() call during binding and ensures socket reuse"""
+
+        allow_reuse_address = True  # Enable SO_REUSEADDR for instant socket reuse
 
         def server_bind(self):
             """Override server_bind to avoid slow getfqdn() call on macOS/Windows"""
+            import socket
+
             logger.debug("Binding socket...")
+            # Explicitly set SO_REUSEADDR to allow immediate port reuse
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.bind(self.server_address)
             self.server_address = self.socket.getsockname()
             # Skip the slow socket.getfqdn() call - just use the host directly
@@ -413,11 +662,14 @@ def run_server(port: int, api_key: str):
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n\n👋 Server stopped")
-        httpd.shutdown()
+    finally:
+        httpd.server_close()
 
 
-def upload_file(server_url: str, file_path: str, api_key: str):
-    """Upload a file to the server (client mode)"""
+def upload_file(
+    server_url: str, file_path: str, api_key: str, set_preview: bool = False
+):
+    """Upload a file to the server"""
     if not os.path.isfile(file_path):
         print(f"❌ Error: File not found: {file_path}")
         return False
@@ -456,6 +708,12 @@ def upload_file(server_url: str, file_path: str, api_key: str):
             print("✅ Upload successful!")
             print(f"   Filename: {result['filename']}")
             print(f"   Size: {result['size']} bytes")
+
+            # Auto-set preview if requested
+            if set_preview:
+                print()
+                return set_preview_func(server_url, result["filename"], api_key)
+
             return True
 
     except urllib.error.HTTPError as e:
@@ -471,9 +729,92 @@ def upload_file(server_url: str, file_path: str, api_key: str):
         return False
 
 
+def set_preview_func(server_url: str, filename: str, api_key: str):
+    """Set the current preview for all clients"""
+    url = f"{server_url.rstrip('/')}/api/preview/set"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    data = json.dumps({"filename": filename}).encode()
+
+    try:
+        print(f"📺 Setting preview to: {filename}")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            print("✅ Preview set successfully!")
+            print(f"   Filename: {result['filename']}")
+            print(f"   Timestamp: {result['timestamp']}")
+            return True
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        try:
+            error_json = json.loads(error_body)
+            print(
+                f"❌ Failed to set preview: {error_json.get('error', 'Unknown error')}"
+            )
+        except (json.JSONDecodeError, KeyError):
+            print(f"❌ Failed to set preview: HTTP {e.code}")
+        return False
+    except Exception as e:
+        print(f"❌ Failed to set preview: {e}")
+        return False
+
+
+def list_files(server_url: str):
+    """List all available files on the server"""
+    url = f"{server_url.rstrip('/')}/api/files"
+
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req) as response:
+            files = json.loads(response.read().decode())
+
+            if not files:
+                print("📋 No files available")
+                return True
+
+            print(f"📋 Available files ({len(files)}):\n")
+            for file in files:
+                size_str = format_file_size(file["size"])
+                print(f"  • {file['name']}")
+                print(f"    Size: {size_str}")
+                print(f"    Type: {file['mimetype']}")
+                print(f"    Uploaded: {file['uploaded']}")
+                print()
+
+            return True
+
+    except urllib.error.HTTPError as e:
+        print(f"❌ Failed to list files: HTTP {e.code}")
+        return False
+    except Exception as e:
+        print(f"❌ Failed to list files: {e}")
+        return False
+
+
+def format_file_size(size_bytes: int) -> str:
+    """Format file size in human-readable format"""
+    if size_bytes == 0:
+        return "0 Bytes"
+    k = 1024
+    sizes = ["Bytes", "KB", "MB", "GB"]
+    i = 0
+    size = float(size_bytes)
+    while size >= k and i < len(sizes) - 1:
+        size /= k
+        i += 1
+    return f"{size:.2f} {sizes[i]}"
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Simple file sharing server/client")
-    subparsers = parser.add_subparsers(dest="mode", help="Mode: server or client")
+    parser = argparse.ArgumentParser(
+        description="Simple file sharing server and client"
+    )
+    subparsers = parser.add_subparsers(dest="mode", help="Available commands")
 
     # Server mode
     server_parser = subparsers.add_parser("server", help="Run in server mode")
@@ -487,17 +828,36 @@ def main():
         "--debug", action="store_true", help="Enable debug logging"
     )
 
-    # Client mode
-    client_parser = subparsers.add_parser(
-        "client", help="Run in client mode (upload file)"
-    )
-    client_parser.add_argument(
+    # Upload mode (renamed from client)
+    upload_parser = subparsers.add_parser("upload", help="Upload a file to the server")
+    upload_parser.add_argument(
         "server_url", help="Server URL (e.g., http://localhost:8080)"
     )
-    client_parser.add_argument("file_path", help="Path to file to upload")
-    client_parser.add_argument(
+    upload_parser.add_argument("file_path", help="Path to file to upload")
+    upload_parser.add_argument(
         "--api-key", required=True, help="API key for upload (required)"
     )
+    upload_parser.add_argument(
+        "--set-preview",
+        action="store_true",
+        help="Automatically set this file as preview for all clients after upload",
+    )
+
+    # List mode
+    list_parser = subparsers.add_parser("list", help="List all available files")
+    list_parser.add_argument(
+        "server_url", help="Server URL (e.g., http://localhost:8080)"
+    )
+
+    # Set preview mode
+    preview_parser = subparsers.add_parser(
+        "set-preview", help="Set the current preview for all clients"
+    )
+    preview_parser.add_argument(
+        "server_url", help="Server URL (e.g., http://localhost:8080)"
+    )
+    preview_parser.add_argument("filename", help="Filename to preview")
+    preview_parser.add_argument("--api-key", required=True, help="API key (required)")
 
     args = parser.parse_args()
 
@@ -514,8 +874,19 @@ def main():
             datefmt="%Y-%m-%d %H:%M:%S",
         )
         run_server(args.port, args.api_key)
-    elif args.mode == "client":
-        success = upload_file(args.server_url, args.file_path, args.api_key)
+    elif args.mode == "upload":
+        success = upload_file(
+            args.server_url,
+            args.file_path,
+            args.api_key,
+            set_preview=args.set_preview,
+        )
+        sys.exit(0 if success else 1)
+    elif args.mode == "list":
+        success = list_files(args.server_url)
+        sys.exit(0 if success else 1)
+    elif args.mode == "set-preview":
+        success = set_preview_func(args.server_url, args.filename, args.api_key)
         sys.exit(0 if success else 1)
 
 

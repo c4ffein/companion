@@ -114,7 +114,7 @@ class FileShareE2ETest(unittest.TestCase):
                 [
                     "python3",
                     "companion.py",
-                    "client",
+                    "upload",
                     self.server_url,
                     test_file,
                     "--api-key",
@@ -153,7 +153,7 @@ class FileShareE2ETest(unittest.TestCase):
                 [
                     "python3",
                     "companion.py",
-                    "client",
+                    "upload",
                     self.server_url,
                     test_file,
                     "--api-key",
@@ -240,7 +240,7 @@ class FileShareE2ETest(unittest.TestCase):
                     [
                         "python3",
                         "companion.py",
-                        "client",
+                        "upload",
                         self.server_url,
                         test_file,
                         "--api-key",
@@ -289,7 +289,7 @@ class FileShareE2ETest(unittest.TestCase):
                 [
                     "python3",
                     "companion.py",
-                    "client",
+                    "upload",
                     self.server_url,
                     test_file,
                     "--api-key",
@@ -339,7 +339,7 @@ class FileShareE2ETest(unittest.TestCase):
                     [
                         "python3",
                         "companion.py",
-                        "client",
+                        "upload",
                         self.server_url,
                         str(filepath),
                         "--api-key",
@@ -378,7 +378,7 @@ class FileShareE2ETest(unittest.TestCase):
                 [
                     "python3",
                     "companion.py",
-                    "client",
+                    "upload",
                     self.server_url,
                     test_file,
                     "--api-key",
@@ -412,6 +412,359 @@ class FileShareE2ETest(unittest.TestCase):
 
         finally:
             Path(test_file).unlink()
+
+    def test_11_preview_state_initial(self):
+        """Test that initial preview state is empty"""
+        response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        state = json.loads(response.read().decode())
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(state["filename"], None)
+        self.assertEqual(state["timestamp"], 0)
+        self.assertNotIn("mimetype", state)
+
+    def test_12_set_preview_via_cli(self):
+        """Test setting preview using the CLI command"""
+        # First upload a file
+        test_content = "Test content for preview"
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(test_content)
+            test_file = f.name
+
+        try:
+            # Upload file first
+            upload_result = subprocess.run(
+                [
+                    "python3",
+                    "companion.py",
+                    "upload",
+                    self.server_url,
+                    test_file,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(upload_result.returncode, 0)
+
+            filename = Path(test_file).name
+
+            # Set preview using CLI
+            result = subprocess.run(
+                [
+                    "python3",
+                    "companion.py",
+                    "set-preview",
+                    self.server_url,
+                    filename,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+
+            self.assertEqual(
+                result.returncode, 0, f"set-preview failed: {result.stderr}"
+            )
+            self.assertIn("Preview set successfully", result.stdout)
+            self.assertIn(filename, result.stdout)
+            self.assertIn("Timestamp: 1", result.stdout)
+
+            # Verify preview state via API
+            response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+            state = json.loads(response.read().decode())
+
+            self.assertEqual(state["filename"], filename)
+            self.assertEqual(state["timestamp"], 1)
+            self.assertIn("mimetype", state)
+            self.assertTrue(state["mimetype"].startswith("text/"))
+
+        finally:
+            Path(test_file).unlink()
+
+    def test_13_set_preview_nonexistent_file(self):
+        """Test that setting preview for nonexistent file fails"""
+        result = subprocess.run(
+            [
+                "python3",
+                "companion.py",
+                "set-preview",
+                self.server_url,
+                "nonexistent-file.txt",
+                "--api-key",
+                self.api_key,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            env=self.env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("File not found", result.stdout)
+
+    def test_14_set_preview_wrong_api_key(self):
+        """Test that setting preview with wrong API key fails"""
+        result = subprocess.run(
+            [
+                "python3",
+                "companion.py",
+                "set-preview",
+                self.server_url,
+                "any-file.txt",
+                "--api-key",
+                "wrong-key",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            env=self.env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid API key", result.stdout)
+
+    def test_15_preview_timestamp_increments(self):
+        """Test that preview timestamp increments atomically on each update"""
+        # Get current timestamp first
+        response_initial = urllib.request.urlopen(
+            f"{self.server_url}/api/preview/current"
+        )
+        state_initial = json.loads(response_initial.read().decode())
+        initial_timestamp = state_initial["timestamp"]
+
+        # Upload two test files
+        test_files = []
+        for i in range(2):
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=f"_preview{i}.txt", delete=False
+            ) as f:
+                f.write(f"Preview content {i}")
+                test_files.append(f.name)
+
+        try:
+            # Upload both files
+            for test_file in test_files:
+                result = subprocess.run(
+                    [
+                        "python3",
+                        "companion.py",
+                        "upload",
+                        self.server_url,
+                        test_file,
+                        "--api-key",
+                        self.api_key,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    env=self.env,
+                )
+                self.assertEqual(result.returncode, 0)
+
+            # Set preview to first file
+            filename1 = Path(test_files[0]).name
+            result1 = subprocess.run(
+                [
+                    "python3",
+                    "companion.py",
+                    "set-preview",
+                    self.server_url,
+                    filename1,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(result1.returncode, 0)
+
+            # Check timestamp incremented by 1
+            response1 = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+            state1 = json.loads(response1.read().decode())
+            self.assertEqual(state1["timestamp"], initial_timestamp + 1)
+            self.assertEqual(state1["filename"], filename1)
+
+            # Set preview to second file
+            filename2 = Path(test_files[1]).name
+            result2 = subprocess.run(
+                [
+                    "python3",
+                    "companion.py",
+                    "set-preview",
+                    self.server_url,
+                    filename2,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(result2.returncode, 0)
+
+            # Check timestamp incremented by 2 from initial
+            response2 = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+            state2 = json.loads(response2.read().decode())
+            self.assertEqual(state2["timestamp"], initial_timestamp + 2)
+            self.assertEqual(state2["filename"], filename2)
+
+        finally:
+            for test_file in test_files:
+                Path(test_file).unlink()
+
+    def test_16_preview_direct_api_call(self):
+        """Test setting preview via direct API call"""
+        # Upload a test file
+        test_content = "Direct API test"
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(test_content)
+            test_file = f.name
+
+        try:
+            # Upload
+            result = subprocess.run(
+                [
+                    "python3",
+                    "companion.py",
+                    "upload",
+                    self.server_url,
+                    test_file,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(result.returncode, 0)
+
+            filename = Path(test_file).name
+
+            # Set preview via direct API call
+            preview_data = json.dumps({"filename": filename}).encode()
+            req = urllib.request.Request(
+                f"{self.server_url}/api/preview/set",
+                data=preview_data,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+
+            response = urllib.request.urlopen(req)
+            result_json = json.loads(response.read().decode())
+
+            self.assertEqual(response.status, 200)
+            self.assertTrue(result_json["success"])
+            self.assertEqual(result_json["filename"], filename)
+            self.assertGreater(result_json["timestamp"], 0)
+
+            # Verify state
+            state_response = urllib.request.urlopen(
+                f"{self.server_url}/api/preview/current"
+            )
+            state = json.loads(state_response.read().decode())
+
+            self.assertEqual(state["filename"], filename)
+            self.assertEqual(state["timestamp"], result_json["timestamp"])
+
+        finally:
+            Path(test_file).unlink()
+
+    def test_17_preview_multiple_updates(self):
+        """Test that multiple rapid preview updates maintain timestamp consistency"""
+        # Upload multiple files
+        test_files = []
+        for i in range(5):
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=f"_rapid{i}.txt", delete=False
+            ) as f:
+                f.write(f"Rapid update {i}")
+                test_files.append(f.name)
+
+        try:
+            # Upload all files
+            filenames = []
+            for test_file in test_files:
+                result = subprocess.run(
+                    [
+                        "python3",
+                        "companion.py",
+                        "upload",
+                        self.server_url,
+                        test_file,
+                        "--api-key",
+                        self.api_key,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    env=self.env,
+                )
+                self.assertEqual(result.returncode, 0)
+                filenames.append(Path(test_file).name)
+
+            # Set preview rapidly for each file
+            timestamps = []
+            for filename in filenames:
+                preview_data = json.dumps({"filename": filename}).encode()
+                req = urllib.request.Request(
+                    f"{self.server_url}/api/preview/set",
+                    data=preview_data,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+
+                response = urllib.request.urlopen(req)
+                result_json = json.loads(response.read().decode())
+                timestamps.append(result_json["timestamp"])
+
+            # Verify timestamps increment monotonically
+            for i in range(1, len(timestamps)):
+                self.assertEqual(
+                    timestamps[i],
+                    timestamps[i - 1] + 1,
+                    f"Timestamp should increment by 1: {timestamps}",
+                )
+
+            # Verify final state
+            state_response = urllib.request.urlopen(
+                f"{self.server_url}/api/preview/current"
+            )
+            state = json.loads(state_response.read().decode())
+
+            self.assertEqual(state["filename"], filenames[-1])
+            self.assertEqual(state["timestamp"], timestamps[-1])
+
+        finally:
+            for test_file in test_files:
+                Path(test_file).unlink()
 
 
 def run_tests():
