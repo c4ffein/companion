@@ -56,20 +56,23 @@ def build_companion():
     pdf_js_content = fetch_url(pdf_js_url, "js_deps/pdf.min.mjs")
     pdf_worker_content = fetch_url(pdf_worker_url, "js_deps/pdf.worker.min.mjs")
 
-    # Embed PDF.js files as Python string constants
-    print("\n🔄 Embedding PDF.js files as Python constants...")
+    # Embed PDF.js files as base64-encoded Python string constants
+    print("\n🔄 Embedding PDF.js files as base64 constants...")
 
-    import json
+    import base64
 
-    # Escape the content for Python string literals
-    pdf_js_escaped = json.dumps(pdf_js_content)
-    pdf_worker_escaped = json.dumps(pdf_worker_content)
+    # Encode content as base64
+    pdf_js_b64 = base64.b64encode(pdf_js_content.encode("utf-8")).decode("ascii")
+    pdf_worker_b64 = base64.b64encode(pdf_worker_content.encode("utf-8")).decode(
+        "ascii"
+    )
 
     # Add embedded PDF.js constants at the top of the file, after imports
     embedded_deps = f"""
 # Embedded PDF.js files for offline use (added by build.py)
-_PDFJS_LIB = {pdf_js_escaped}
-_PDFJS_WORKER = {pdf_worker_escaped}
+# Base64-encoded to avoid escaping issues
+_PDFJS_LIB = "{pdf_js_b64}";
+_PDFJS_WORKER = "{pdf_worker_b64}";
 """
 
     # Insert after the imports section (after "from typing import Dict, Tuple")
@@ -100,9 +103,11 @@ _PDFJS_WORKER = {pdf_worker_escaped}
     deps_handler = """        # Serve embedded PDF.js dependencies (built version only)
         if self.path == "/deps/pdf.min.mjs":
             if "_PDFJS_LIB" in globals():
+                import base64
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/javascript; charset=utf-8")
-                content_bytes = _PDFJS_LIB.encode("utf-8")
+                # Decode base64 to get original content
+                content_bytes = base64.b64decode(_PDFJS_LIB.rstrip(';').strip('"'))
                 self.send_header("Content-Length", str(len(content_bytes)))
                 self.send_header("Cache-Control", "public, max-age=31536000")  # Cache for 1 year
                 self.end_headers()
@@ -113,9 +118,11 @@ _PDFJS_WORKER = {pdf_worker_escaped}
 
         if self.path == "/deps/pdf.worker.min.mjs":
             if "_PDFJS_WORKER" in globals():
+                import base64
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/javascript; charset=utf-8")
-                content_bytes = _PDFJS_WORKER.encode("utf-8")
+                # Decode base64 to get original content
+                content_bytes = base64.b64decode(_PDFJS_WORKER.rstrip(';').strip('"'))
                 self.send_header("Content-Length", str(len(content_bytes)))
                 self.send_header("Cache-Control", "public, max-age=31536000")  # Cache for 1 year
                 self.end_headers()

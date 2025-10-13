@@ -25,11 +25,11 @@ jobs:
 
     - name: Check code formatting
       run: |
-        ruff format --check src/companion.py test_companion.py build.py
+        ruff format --check src/companion.py tests/ build.py
 
     - name: Lint code
       run: |
-        ruff check src/companion.py test_companion.py build.py
+        ruff check src/companion.py tests/ build.py
 
   verify-build:
     name: Verify Built File
@@ -44,6 +44,9 @@ jobs:
 
     - name: Verify companion.py matches source
       run: make verify-build
+
+    - name: Validate base64 format of embedded PDF.js
+      run: make test-base64
 
   test-dev:
     name: Test Dev Version - ${{ matrix.os }} (Python ${{ matrix.python-version }})
@@ -83,7 +86,7 @@ jobs:
     - name: Run tests on dev version
       env:
         TEST_VERSION: dev
-      run: python test_companion.py
+      run: python tests/test_companion.py
 
   test-built:
     name: Test Built Version - ${{ matrix.os }} (Python ${{ matrix.python-version }})
@@ -123,4 +126,4 @@ jobs:
     - name: Run tests on built version
       env:
         TEST_VERSION: built
-      run: python test_companion.py
+      run: python tests/test_companion.py

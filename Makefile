@@ -1,4 +1,4 @@
-.PHONY: help test test-dev test-built test-all test-browser format lint check clean run build verify-build
+.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check clean run build verify-build
 
 # Default target
 help:
@@ -8,6 +8,7 @@ help:
 	@echo "  make test-built   - Run tests on built version (companion.py)"
 	@echo "  make test-all     - Run tests on both dev and built versions"
 	@echo "  make test-browser - Run browser E2E tests with Playwright"
+	@echo "  make test-base64  - Validate base64 format of embedded PDF.js"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make lint         - Lint code with ruff"
 	@echo "  make check        - Run format, lint, and tests"
@@ -22,12 +23,12 @@ test: test-dev
 # Run tests on dev version
 test-dev:
 	@echo "🧪 Running tests on DEV version..."
-	TEST_VERSION=dev python3 test_companion.py
+	TEST_VERSION=dev python3 tests/test_companion.py
 
 # Run tests on built version
 test-built:
 	@echo "🧪 Running tests on BUILT version..."
-	TEST_VERSION=built python3 test_companion.py
+	TEST_VERSION=built python3 tests/test_companion.py
 
 # Run tests on both versions
 test-all: test-dev test-built
@@ -38,17 +39,39 @@ test-browser:
 	@echo "🌐 Running browser E2E tests..."
 	@echo "📦 Installing Playwright browsers (first time only)..."
 	uvx --from playwright --with playwright playwright install chromium 2>/dev/null || true
-	uvx --from playwright --with playwright python test_browser.py
+	uvx --from playwright --with playwright python tests/test_browser.py
+
+# Validate base64 format of embedded PDF.js libraries
+test-base64:
+	@python3 -c "import sys; \
+from pathlib import Path; \
+print('🔍 Validating base64 format of embedded PDF.js...'); \
+path = Path('companion.py'); \
+not path.exists() and (print('❌ companion.py not found. Run make build first.') or sys.exit(1)); \
+lines = path.read_text().split('\n'); \
+base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='); \
+[(print(f'📋 Checking {var} format...'), \
+  (count := len([line for line in lines if line.startswith(var)])), \
+  (print(f'❌ Found {count} lines starting with {var}, expected exactly 1') or sys.exit(1)) if count != 1 else None, \
+  (matching := [line for line in lines if line.startswith(var)][0]), \
+  (prefix := f'{var} = \"'), \
+  (print(f'❌ {var} line must start with {repr(prefix)}') or sys.exit(1)) if not matching.startswith(prefix) else None, \
+  (print(f'❌ {var} line must end with \";\"') or sys.exit(1)) if not matching.endswith('\";') else None, \
+  (content := matching[len(prefix):-2]), \
+  (print(f'❌ {var} contains invalid base64 characters') or print(f'   Got: {content[:80]}...') or sys.exit(1)) if not all(c in base64_chars for c in content) else None, \
+  print(f'✅ {var} format valid')) \
+for var in ['_PDFJS_LIB', '_PDFJS_WORKER']]; \
+print('🎉 All base64 format checks passed!')"
 
 # Format code with ruff
 format:
 	@echo "Formatting code..."
-	ruff format src/companion.py test_companion.py build.py
+	ruff format src/companion.py tests/ build.py
 
 # Lint code with ruff
 lint:
 	@echo "Linting code..."
-	ruff check src/companion.py test_companion.py build.py
+	ruff check src/companion.py tests/ build.py
 
 # Run all checks (format, lint, test)
 check: format lint test
