@@ -197,9 +197,17 @@ The build process:
 
 ## License
 
-MIT License - Copyright (c) 2025 c4ffein
+**Companion is licensed under the MIT License - Copyright (c) 2025 c4ffein**
 
-See [LICENSE](LICENSE) file for details.
+The built distribution file (`companion.py`) includes:
+- **Companion code**: MIT License (Copyright (c) 2025 c4ffein)
+- **Embedded PDF.js library**: Apache License 2.0 (Copyright Mozilla Foundation)
+
+Both licenses are permissive and allow commercial and non-commercial use. The combination is fully legal and compliant.
+
+**For users**: You can use, modify, and distribute Companion (including the built version with embedded PDF.js) under the terms of the MIT License. The embedded PDF.js library is Apache 2.0 licensed, which is compatible with MIT.
+
+**For developers**: See [LICENSE](LICENSE) for the full MIT license text. See [js_deps/LICENSE](js_deps/LICENSE) for PDF.js license details.
 
 ## Acknowledgments
 

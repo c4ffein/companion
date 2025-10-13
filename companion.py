@@ -5,6 +5,12 @@
     This version includes inlined PDF.js (~1.4MB) for offline use.
     For development, use src/companion.py which loads PDF.js from CDN.
 
+LICENSE NOTICE:
+    - Companion code: MIT License, Copyright (c) 2025 c4ffein
+    - Embedded PDF.js library: Apache License 2.0, Copyright Mozilla Foundation
+    - See js_deps/LICENSE for full PDF.js license details
+    - Both licenses allow commercial and non-commercial use
+
 
 Companion - Simple file sharing server and client
 Usage:

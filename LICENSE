@@ -19,3 +19,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+================================================================================
+THIRD-PARTY LICENSES
+================================================================================
+
+The built distribution file (companion.py) includes embedded third-party
+libraries with their own licenses:
+
+PDF.js
+------
+The built version includes PDF.js (https://github.com/mozilla/pdf.js), which is
+licensed under the Apache License 2.0.
+
+Copyright: Mozilla Foundation
+License: Apache License 2.0
+Full license text: See js_deps/LICENSE or
+                   https://www.apache.org/licenses/LICENSE-2.0
+
+The Apache 2.0 License is compatible with the MIT License. Users and
+developers may use, modify, and distribute the built version (companion.py)
+containing both MIT-licensed and Apache 2.0-licensed code.
