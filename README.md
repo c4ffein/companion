@@ -68,18 +68,20 @@ python companion.py set-preview http://localhost:8080 slides.pdf --api-key mySec
 
 ## Installation
 
-No installation needed! Just download `companion.py`:
+No installation needed! Just download the built `companion.py` (includes inlined PDF.js for offline use):
 
 ```bash
 curl -LO https://raw.githubusercontent.com/c4ffein/companion/master/companion.py
 chmod +x companion.py
 ```
 
-Or clone the repository:
+Or clone the repository for development:
 
 ```bash
 git clone https://github.com/c4ffein/companion.git
 cd companion
+# Use src/companion.py for development (requires internet for PDF preview)
+# Or run 'make build' to create companion.py at root with inlined PDF.js
 ```
 
 ## Development
@@ -98,6 +100,48 @@ make format  # Format code
 make lint    # Lint code
 make check   # Run all checks
 ```
+
+### Project Structure
+
+```
+companion/
+├── src/
+│   └── companion.py      # Development version (uses CDN for PDF.js)
+├── js_deps/              # JavaScript dependencies cache
+│   ├── pdf.min.mjs       # PDF.js library (auto-downloaded)
+│   └── pdf.worker.min.mjs # PDF.js worker (auto-downloaded)
+├── companion.py          # Built version (generated, includes inlined PDF.js)
+├── build.py              # Build tool to create companion.py from src/
+├── test_companion.py     # Test suite
+└── Makefile              # Build commands
+```
+
+### Building for Distribution
+
+The repository uses a two-version approach:
+
+- **Development**: `src/companion.py` uses CDN-hosted PDF.js (requires internet for PDF preview)
+- **Distribution**: `companion.py` at root includes inlined PDF.js (~1.5MB, works offline)
+
+To build the distribution version:
+
+```bash
+make build  # Creates companion.py at root with inlined PDF.js
+```
+
+The build process:
+1. Reads `src/companion.py`
+2. Fetches PDF.js (~400KB) and PDF.js Worker (~1MB) from CDN (or uses cached versions in `js_deps/`)
+3. Inlines them into the Python source as JavaScript strings
+4. Adds a marker to the docstring indicating it's a built version
+5. Writes `companion.py` to the root directory
+
+**Notes:**
+- **⚠️ Committing Generated Files**: Both `companion.py` (built file) and `js_deps/` (dependencies) are committed to git. This is intentionally against typical best practices, but is an acceptable tradeoff for this project
+- The built file is automatically generated - don't edit it directly, edit `src/companion.py` instead
+- JavaScript dependencies are cached in `js_deps/` for faster rebuilds
+- First build downloads from CDN, subsequent builds use the cache
+- To force re-download, delete files in `js_deps/`
 
 ## Security Notes
 
@@ -142,7 +186,7 @@ make check   # Run all checks
 
 ## Roadmap
 
-- [ ] PDF.js integration for better mobile Safari support (with build tool to inline assets)
+- [x] PDF.js integration for better mobile Safari support (with build tool to inline assets)
 - [ ] End-to-end encryption
 - [ ] File deletion API
 - [ ] Password-protected downloads

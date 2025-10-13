@@ -167,6 +167,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     <title>Companion</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- PDF.js CDN - will be inlined in build -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs" type="module"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 40px auto 80px; padding: 0 20px; background: #f5f5f5; }
         h1 { color: #333; }
@@ -262,7 +264,20 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         <button class="nav-button" onclick="switchTab('preview')">Preview</button>
     </div>
 
-    <script>
+    <script type="module">
+        // PDF.js setup
+        import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs';
+
+        // Make pdfjsLib available globally
+        window.pdfjsLib = pdfjsLib;
+
+        // PDF state
+        window.pdfDoc = null;
+        window.pageNum = 1;
+        window.pageRendering = false;
+        window.pageNumPending = null;
+
         let autoRefreshInterval = null;
         let localPreviewTimestamp = 0;
 
@@ -360,8 +375,14 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 // Audio preview
                 previewContent.innerHTML = `<audio controls><source src="${url}" type="${mimetype}">Your browser does not support audio playback.</audio>`;
             } else if (mimetype === 'application/pdf') {
-                // PDF preview
-                previewContent.innerHTML = `<iframe src="${url}" type="application/pdf"></iframe>`;
+                // PDF preview using PDF.js
+                previewContent.innerHTML = `<canvas id="pdfCanvas" style="max-width: 100%; height: auto;"></canvas>
+                    <div style="margin-top: 10px; text-align: center;">
+                        <button onclick="prevPage()" class="btn-secondary">Previous</button>
+                        <span style="margin: 0 15px;">Page <span id="pageNum"></span> / <span id="pageCount"></span></span>
+                        <button onclick="nextPage()" class="btn-secondary">Next</button>
+                    </div>`;
+                renderPDF(url);
             } else if (mimetype.startsWith('text/') || mimetype === 'application/json' || mimetype === 'application/javascript') {
                 // Text preview
                 fetch(url)
@@ -497,6 +518,76 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 // Silently fail - don't spam console with errors
             }
         }
+
+        // PDF.js rendering functions
+        window.renderPage = function(num) {
+            window.pageRendering = true;
+            window.pdfDoc.getPage(num).then(function(page) {
+                const canvas = document.getElementById('pdfCanvas');
+                const ctx = canvas.getContext('2d');
+                const viewport = page.getViewport({scale: 1.5});
+
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
+
+                const renderTask = page.render(renderContext);
+
+                renderTask.promise.then(function() {
+                    window.pageRendering = false;
+                    if (window.pageNumPending !== null) {
+                        window.renderPage(window.pageNumPending);
+                        window.pageNumPending = null;
+                    }
+                });
+            });
+
+            document.getElementById('pageNum').textContent = num;
+        };
+
+        window.queueRenderPage = function(num) {
+            if (window.pageRendering) {
+                window.pageNumPending = num;
+            } else {
+                window.renderPage(num);
+            }
+        };
+
+        window.prevPage = function() {
+            if (window.pageNum <= 1) {
+                return;
+            }
+            window.pageNum--;
+            window.queueRenderPage(window.pageNum);
+        };
+
+        window.nextPage = function() {
+            if (window.pageNum >= window.pdfDoc.numPages) {
+                return;
+            }
+            window.pageNum++;
+            window.queueRenderPage(window.pageNum);
+        };
+
+        window.renderPDF = function(url) {
+            const loadingTask = window.pdfjsLib.getDocument(url);
+            loadingTask.promise.then(function(pdfDoc_) {
+                window.pdfDoc = pdfDoc_;
+                document.getElementById('pageCount').textContent = window.pdfDoc.numPages;
+
+                // Initial/first page rendering
+                window.pageNum = 1;
+                window.renderPage(window.pageNum);
+            }).catch(function(error) {
+                console.error('Error loading PDF:', error);
+                document.getElementById('previewContent').innerHTML =
+                    '<div class="empty-state">Error loading PDF. Try downloading the file instead.</div>';
+            });
+        };
 
         // Load files on page load
         loadFiles();

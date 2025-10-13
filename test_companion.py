@@ -34,7 +34,7 @@ class FileShareE2ETest(unittest.TestCase):
         cls.server_process = subprocess.Popen(
             [
                 "python3",
-                "companion.py",
+                "src/companion.py",
                 "server",
                 "--port",
                 str(cls.port),
@@ -113,7 +113,7 @@ class FileShareE2ETest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "upload",
                     self.server_url,
                     test_file,
@@ -152,7 +152,7 @@ class FileShareE2ETest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "upload",
                     self.server_url,
                     test_file,
@@ -239,7 +239,7 @@ class FileShareE2ETest(unittest.TestCase):
                 proc = subprocess.Popen(
                     [
                         "python3",
-                        "companion.py",
+                        "src/companion.py",
                         "upload",
                         self.server_url,
                         test_file,
@@ -288,7 +288,7 @@ class FileShareE2ETest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "upload",
                     self.server_url,
                     test_file,
@@ -338,7 +338,7 @@ class FileShareE2ETest(unittest.TestCase):
                 result = subprocess.run(
                     [
                         "python3",
-                        "companion.py",
+                        "src/companion.py",
                         "upload",
                         self.server_url,
                         str(filepath),
@@ -377,7 +377,7 @@ class FileShareE2ETest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "upload",
                     self.server_url,
                     test_file,
@@ -437,7 +437,7 @@ class FileShareE2ETest(unittest.TestCase):
             upload_result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "upload",
                     self.server_url,
                     test_file,
@@ -458,7 +458,7 @@ class FileShareE2ETest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "set-preview",
                     self.server_url,
                     filename,
@@ -496,7 +496,7 @@ class FileShareE2ETest(unittest.TestCase):
         result = subprocess.run(
             [
                 "python3",
-                "companion.py",
+                "src/companion.py",
                 "set-preview",
                 self.server_url,
                 "nonexistent-file.txt",
@@ -518,7 +518,7 @@ class FileShareE2ETest(unittest.TestCase):
         result = subprocess.run(
             [
                 "python3",
-                "companion.py",
+                "src/companion.py",
                 "set-preview",
                 self.server_url,
                 "any-file.txt",
@@ -559,7 +559,7 @@ class FileShareE2ETest(unittest.TestCase):
                 result = subprocess.run(
                     [
                         "python3",
-                        "companion.py",
+                        "src/companion.py",
                         "upload",
                         self.server_url,
                         test_file,
@@ -579,7 +579,7 @@ class FileShareE2ETest(unittest.TestCase):
             result1 = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "set-preview",
                     self.server_url,
                     filename1,
@@ -605,7 +605,7 @@ class FileShareE2ETest(unittest.TestCase):
             result2 = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "set-preview",
                     self.server_url,
                     filename2,
@@ -644,7 +644,7 @@ class FileShareE2ETest(unittest.TestCase):
             result = subprocess.run(
                 [
                     "python3",
-                    "companion.py",
+                    "src/companion.py",
                     "upload",
                     self.server_url,
                     test_file,
@@ -711,7 +711,7 @@ class FileShareE2ETest(unittest.TestCase):
                 result = subprocess.run(
                     [
                         "python3",
-                        "companion.py",
+                        "src/companion.py",
                         "upload",
                         self.server_url,
                         test_file,
