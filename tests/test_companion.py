@@ -849,11 +849,11 @@ class FileShareE2ETest(unittest.TestCase):
 
 def run_tests():
     """Run the test suite"""
-    # Change to script directory
+    # Change to project root directory (parent of tests/)
     import os
 
-    script_dir = Path(__file__).parent
-    os.chdir(script_dir)
+    project_root = Path(__file__).parent.parent
+    os.chdir(project_root)
 
     # Run tests
     loader = unittest.TestLoader()

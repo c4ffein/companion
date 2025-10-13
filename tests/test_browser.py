@@ -24,7 +24,7 @@ def test_page_load_and_console(url, version_name):
 
         def handle_console(msg):
             console_messages.append(f"[{msg.type}] {msg.text}")
-            if msg.type in ['error', 'warning']:
+            if msg.type in ["error", "warning"]:
                 errors.append(f"[{msg.type}] {msg.text}")
 
         def handle_page_error(error):
@@ -62,7 +62,7 @@ def test_page_load_and_console(url, version_name):
             # Test tab switching
             files_button.click()
             time.sleep(0.5)
-            files_tab = page.locator('#filesTab')
+            files_tab = page.locator("#filesTab")
             assert files_tab.is_visible(), "Files tab should be visible after click"
             print("✅ Tab switching works")
 
@@ -72,7 +72,7 @@ def test_page_load_and_console(url, version_name):
 
         # Report console errors
         if errors:
-            print(f"\n❌ Console errors/warnings found:")
+            print("\n❌ Console errors/warnings found:")
             for error in errors:
                 print(f"  {error}")
         else:
@@ -80,7 +80,7 @@ def test_page_load_and_console(url, version_name):
 
         # ALWAYS print all console messages for debugging
         if console_messages:
-            print(f"\n📋 All console messages:")
+            print("\n📋 All console messages:")
             for msg in console_messages:
                 print(f"  {msg}")
 
@@ -90,15 +90,30 @@ def test_page_load_and_console(url, version_name):
 
 def main():
     """Run browser tests against both dev and built versions"""
+    # Change to project root directory (parent of tests/)
+    import os
+    from pathlib import Path
+
+    project_root = Path(__file__).parent.parent
+    os.chdir(project_root)
+
     print("🧪 Starting browser E2E tests...")
 
     # Start server for dev version
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Testing DEV version (src/companion.py)")
-    print("="*60)
+    print("=" * 60)
 
     server_dev = subprocess.Popen(
-        ["python3", "src/companion.py", "server", "--api-key", "test123", "--port", "8090"],
+        [
+            "python3",
+            "src/companion.py",
+            "server",
+            "--api-key",
+            "test123",
+            "--port",
+            "8090",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -112,9 +127,9 @@ def main():
         server_dev.wait()
 
     # Start server for built version
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Testing BUILT version (companion.py)")
-    print("="*60)
+    print("=" * 60)
 
     server_built = subprocess.Popen(
         ["python3", "companion.py", "server", "--api-key", "test123", "--port", "8091"],
@@ -125,15 +140,17 @@ def main():
     time.sleep(2)  # Wait for server to start
 
     try:
-        built_passed = test_page_load_and_console("http://localhost:8091", "BUILT version")
+        built_passed = test_page_load_and_console(
+            "http://localhost:8091", "BUILT version"
+        )
     finally:
         server_built.terminate()
         server_built.wait()
 
     # Summary
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("BROWSER TEST SUMMARY")
-    print("="*60)
+    print("=" * 60)
     print(f"DEV version:   {'✅ PASS' if dev_passed else '❌ FAIL'}")
     print(f"BUILT version: {'✅ PASS' if built_passed else '❌ FAIL'}")
 
