@@ -49,9 +49,7 @@ def build_companion():
 
     # Fetch PDF.js files (or load from cache)
     pdf_js_url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs"
-    pdf_worker_url = (
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs"
-    )
+    pdf_worker_url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs"
 
     pdf_js_content = fetch_url(pdf_js_url, "js_deps/pdf.min.mjs")
     pdf_worker_content = fetch_url(pdf_worker_url, "js_deps/pdf.worker.min.mjs")
@@ -63,9 +61,7 @@ def build_companion():
 
     # Encode content as base64
     pdf_js_b64 = base64.b64encode(pdf_js_content.encode("utf-8")).decode("ascii")
-    pdf_worker_b64 = base64.b64encode(pdf_worker_content.encode("utf-8")).decode(
-        "ascii"
-    )
+    pdf_worker_b64 = base64.b64encode(pdf_worker_content.encode("utf-8")).decode("ascii")
 
     # Add embedded PDF.js constants at the top of the file, after imports
     embedded_deps = f"""

@@ -80,9 +80,7 @@ class FileShareE2ETest(unittest.TestCase):
                     cls.server_process.kill()
                     stdout, stderr = cls.server_process.communicate(timeout=1)
                     raise Exception(
-                        f"Server failed to start (still running but not responding)\n"
-                        f"Stdout: {stdout}\n"
-                        f"Stderr: {stderr}"
+                        f"Server failed to start (still running but not responding)\nStdout: {stdout}\nStderr: {stderr}"
                     )
                 time.sleep(0.5)
 
@@ -236,9 +234,7 @@ class FileShareE2ETest(unittest.TestCase):
 
         # Create test files
         for i in range(num_clients):
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=f"_client{i}.txt", delete=False
-            ) as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=f"_client{i}.txt", delete=False) as f:
                 f.write(f"Content from client {i}")
                 test_files.append(f.name)
 
@@ -482,9 +478,7 @@ class FileShareE2ETest(unittest.TestCase):
                 env=self.env,
             )
 
-            self.assertEqual(
-                result.returncode, 0, f"set-preview failed: {result.stderr}"
-            )
+            self.assertEqual(result.returncode, 0, f"set-preview failed: {result.stderr}")
             self.assertIn("Preview set successfully", result.stdout)
             self.assertIn(filename, result.stdout)
             self.assertIn("Timestamp: 1", result.stdout)
@@ -548,18 +542,14 @@ class FileShareE2ETest(unittest.TestCase):
     def test_15_preview_timestamp_increments(self):
         """Test that preview timestamp increments atomically on each update"""
         # Get current timestamp first
-        response_initial = urllib.request.urlopen(
-            f"{self.server_url}/api/preview/current"
-        )
+        response_initial = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
         state_initial = json.loads(response_initial.read().decode())
         initial_timestamp = state_initial["timestamp"]
 
         # Upload two test files
         test_files = []
         for i in range(2):
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=f"_preview{i}.txt", delete=False
-            ) as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=f"_preview{i}.txt", delete=False) as f:
                 f.write(f"Preview content {i}")
                 test_files.append(f.name)
 
@@ -692,9 +682,7 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertGreater(result_json["timestamp"], 0)
 
             # Verify state
-            state_response = urllib.request.urlopen(
-                f"{self.server_url}/api/preview/current"
-            )
+            state_response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
             state = json.loads(state_response.read().decode())
 
             self.assertEqual(state["filename"], filename)
@@ -708,9 +696,7 @@ class FileShareE2ETest(unittest.TestCase):
         # Upload multiple files
         test_files = []
         for i in range(5):
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=f"_rapid{i}.txt", delete=False
-            ) as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=f"_rapid{i}.txt", delete=False) as f:
                 f.write(f"Rapid update {i}")
                 test_files.append(f.name)
 
@@ -764,9 +750,7 @@ class FileShareE2ETest(unittest.TestCase):
                 )
 
             # Verify final state
-            state_response = urllib.request.urlopen(
-                f"{self.server_url}/api/preview/current"
-            )
+            state_response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
             state = json.loads(state_response.read().decode())
 
             self.assertEqual(state["filename"], filenames[-1])

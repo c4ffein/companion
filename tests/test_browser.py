@@ -140,9 +140,7 @@ def main():
     time.sleep(2)  # Wait for server to start
 
     try:
-        built_passed = test_page_load_and_console(
-            "http://localhost:8091", "BUILT version"
-        )
+        built_passed = test_page_load_and_console("http://localhost:8091", "BUILT version")
     finally:
         server_built.terminate()
         server_built.wait()

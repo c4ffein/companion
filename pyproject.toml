@@ -1,0 +1,12 @@
+[project]
+name = "companion"
+version = "0.1.0"
+description = "A minimal, single-file Python tool for ephemeral file sharing on local networks"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+line-ending = "lf"

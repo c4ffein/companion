@@ -35,9 +35,7 @@ class TestPadAPI(unittest.TestCase):
         def run_server():
             companion.API_KEY = cls.api_key
             server_address = ("127.0.0.1", cls.port)
-            httpd = companion.http.server.HTTPServer(
-                server_address, companion.FileShareHandler
-            )
+            httpd = companion.http.server.HTTPServer(server_address, companion.FileShareHandler)
             httpd.allow_reuse_address = True
             cls.httpd = httpd
             httpd.serve_forever()
@@ -73,9 +71,7 @@ class TestPadAPI(unittest.TestCase):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
 
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
@@ -90,9 +86,7 @@ class TestPadAPI(unittest.TestCase):
             "Authorization": "Bearer wrong_key",
             "Content-Type": "application/json",
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
 
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req)
@@ -108,9 +102,7 @@ class TestPadAPI(unittest.TestCase):
         }
 
         # Post content
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             timestamp = result["timestamp"]
@@ -132,9 +124,7 @@ class TestPadAPI(unittest.TestCase):
         timestamps = []
         for i in range(3):
             data = json.dumps({"content": f"Content {i}"}).encode("utf-8")
-            req = urllib.request.Request(
-                f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-            )
+            req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
             with urllib.request.urlopen(req) as response:
                 result = json.loads(response.read().decode())
                 timestamps.append(result["timestamp"])
@@ -151,9 +141,7 @@ class TestPadAPI(unittest.TestCase):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
 
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req)
@@ -169,9 +157,7 @@ class TestPadAPI(unittest.TestCase):
         }
 
         # Post unicode content
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertTrue(result["success"])
@@ -190,16 +176,12 @@ class TestPadAPI(unittest.TestCase):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
         urllib.request.urlopen(req)
 
         # Clear with empty content
         data = json.dumps({"content": ""}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertTrue(result["success"])
@@ -231,9 +213,7 @@ class TestPadCLI(unittest.TestCase):
         def run_server():
             companion.API_KEY = cls.api_key
             server_address = ("127.0.0.1", cls.port)
-            httpd = companion.http.server.HTTPServer(
-                server_address, companion.FileShareHandler
-            )
+            httpd = companion.http.server.HTTPServer(server_address, companion.FileShareHandler)
             httpd.allow_reuse_address = True
             cls.httpd = httpd
             httpd.serve_forever()
@@ -263,9 +243,7 @@ class TestPadCLI(unittest.TestCase):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        req = urllib.request.Request(
-            f"{self.base_url}/api/pad", data=data, headers=headers, method="POST"
-        )
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
         urllib.request.urlopen(req)
 
         # Test get-pad CLI

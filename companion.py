@@ -147,9 +147,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 self._handle_multipart_upload(body, content_type)
             else:
                 self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(
-                    json.dumps({"error": "Expected multipart/form-data"}).encode()
-                )
+                self.wfile.write(json.dumps({"error": "Expected multipart/form-data"}).encode())
         else:
             self._set_headers(HTTPStatus.NOT_FOUND)
             self.wfile.write(b"Not found")
@@ -948,15 +946,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
             # Check size limit
             if len(content) > PAD_MAX_SIZE:
-                self._set_headers(
-                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json"
-                )
+                self._set_headers(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json")
                 self.wfile.write(
-                    json.dumps(
-                        {
-                            "error": f"Content exceeds maximum size of {PAD_MAX_SIZE} bytes"
-                        }
-                    ).encode()
+                    json.dumps({"error": f"Content exceeds maximum size of {PAD_MAX_SIZE} bytes"}).encode()
                 )
                 return
 
@@ -1036,9 +1028,7 @@ def run_server(port: int, api_key: str):
         httpd.server_close()
 
 
-def upload_file(
-    server_url: str, file_path: str, api_key: str, set_preview: bool = False
-):
+def upload_file(server_url: str, file_path: str, api_key: str, set_preview: bool = False):
     """Upload a file to the server"""
     if not os.path.isfile(file_path):
         print(f"❌ Error: File not found: {file_path}")
@@ -1055,9 +1045,7 @@ def upload_file(
     body = io.BytesIO()
 
     body.write(f"--{boundary}\r\n".encode())
-    body.write(
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-    )
+    body.write(f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode())
     body.write(b"Content-Type: application/octet-stream\r\n\r\n")
     body.write(file_content)
     body.write(f"\r\n--{boundary}--\r\n".encode())
@@ -1123,9 +1111,7 @@ def set_preview_func(server_url: str, filename: str, api_key: str):
         error_body = e.read().decode()
         try:
             error_json = json.loads(error_body)
-            print(
-                f"❌ Failed to set preview: {error_json.get('error', 'Unknown error')}"
-            )
+            print(f"❌ Failed to set preview: {error_json.get('error', 'Unknown error')}")
         except (json.JSONDecodeError, KeyError):
             print(f"❌ Failed to set preview: HTTP {e.code}")
         return False
@@ -1248,13 +1234,9 @@ def main():
     server_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     # Upload mode (renamed from client)
     upload_parser = subparsers.add_parser("upload", help="Upload a file to the server")
-    upload_parser.add_argument(
-        "server_url", help="Server URL (e.g., http://localhost:8080)"
-    )
+    upload_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     upload_parser.add_argument("file_path", help="Path to file to upload")
-    upload_parser.add_argument(
-        "--api-key", required=True, help="API key for upload (required)"
-    )
+    upload_parser.add_argument("--api-key", required=True, help="API key for upload (required)")
     upload_parser.add_argument(
         "--set-preview",
         action="store_true",
