@@ -32,6 +32,11 @@ API_KEY = None  # Must be set via command line
 PREVIEW_STATE = {"filename": None, "timestamp": 0}
 PREVIEW_LOCK = Lock()
 
+# Pad state: shared text pad content
+PAD_STATE = {"content": "", "timestamp": 0}
+PAD_LOCK = Lock()
+PAD_MAX_SIZE = 10 * 1024 * 1024  # 10MB character limit
+
 # Setup logger
 logger = logging.getLogger("companion")
 
@@ -61,6 +66,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             self._serve_file_list()
         elif path == "/api/preview/current":
             self._serve_preview_state()
+        elif path == "/api/pad":
+            self._serve_pad_content()
         elif path.startswith("/download/"):
             filename = urllib.parse.unquote(path[10:])
             self._serve_file(filename)
@@ -72,6 +79,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Handle POST requests (file uploads)"""
         if self.path == "/api/preview/set":
             self._handle_preview_set()
+        elif self.path == "/api/pad":
+            self._handle_pad_update()
         elif self.path == "/api/upload":
             if not self._check_api_key():
                 self._set_headers(HTTPStatus.UNAUTHORIZED, "application/json")
@@ -258,10 +267,25 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         </div>
     </div>
 
+    <div id="padTab" class="tab-content">
+        <h2>Shared Pad</h2>
+        <div>
+            <input type="text" id="padApiKey" placeholder="API Key (required for editing)" style="width: 100%; max-width: 400px; margin-bottom: 10px;">
+        </div>
+        <textarea id="padContent" placeholder="Type or paste text here to share between devices..." style="width: 100%; height: 400px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 14px; resize: vertical;"></textarea>
+        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <div id="padStatus" style="font-size: 12px; color: #666;"></div>
+            <div style="font-size: 12px; color: #999;">
+                <span id="padCharCount">0</span> characters
+            </div>
+        </div>
+    </div>
+
     <div class="bottom-nav">
         <button class="nav-button active" data-tab="upload">Upload</button>
         <button class="nav-button" data-tab="files">Files</button>
         <button class="nav-button" data-tab="preview">Preview</button>
+        <button class="nav-button" data-tab="pad">Pad</button>
     </div>
 
     <script type="module">
@@ -279,6 +303,11 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         let localPreviewTimestamp = 0;
         let currentPreviewFilename = null;
 
+        // Pad state
+        let padSaveTimeout = null;
+        let localPadTimestamp = 0;
+        let isUpdatingPad = false;
+
         // Tab switching
         function switchTab(tab) {
             // Hide all tabs
@@ -295,6 +324,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             } else if (tab === 'preview') {
                 document.getElementById('previewTab').classList.add('active');
                 document.querySelector('[data-tab="preview"]').classList.add('active');
+            } else if (tab === 'pad') {
+                document.getElementById('padTab').classList.add('active');
+                document.querySelector('[data-tab="pad"]').classList.add('active');
             }
         }
 
@@ -517,6 +549,89 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             }
         }
 
+        // Pad functions
+        async function loadPadContent() {
+            try {
+                const response = await fetch('/api/pad');
+                const state = await response.json();
+
+                // Only update if server has newer content and we're not currently typing
+                if (state.timestamp > localPadTimestamp && !isUpdatingPad) {
+                    const padContent = document.getElementById('padContent');
+                    padContent.value = state.content;
+                    localPadTimestamp = state.timestamp;
+                    updatePadCharCount();
+                }
+            } catch (error) {
+                // Silently fail
+            }
+        }
+
+        async function savePadContent() {
+            const padContent = document.getElementById('padContent');
+            const padApiKey = document.getElementById('padApiKey');
+            const padStatus = document.getElementById('padStatus');
+
+            if (!padApiKey.value) {
+                padStatus.textContent = 'API key required';
+                padStatus.style.color = '#d32f2f';
+                return;
+            }
+
+            try {
+                padStatus.textContent = 'Saving...';
+                padStatus.style.color = '#666';
+
+                const response = await fetch('/api/pad', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': 'Bearer ' + padApiKey.value,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ content: padContent.value })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    localPadTimestamp = result.timestamp;
+                    padStatus.textContent = 'Saved';
+                    padStatus.style.color = '#4caf50';
+                    setTimeout(() => {
+                        padStatus.textContent = '';
+                    }, 2000);
+                } else {
+                    padStatus.textContent = 'Error: ' + (result.error || 'Save failed');
+                    padStatus.style.color = '#d32f2f';
+                }
+            } catch (error) {
+                padStatus.textContent = 'Network error';
+                padStatus.style.color = '#d32f2f';
+            }
+        }
+
+        function updatePadCharCount() {
+            const padContent = document.getElementById('padContent');
+            const padCharCount = document.getElementById('padCharCount');
+            padCharCount.textContent = padContent.value.length.toLocaleString();
+        }
+
+        function handlePadInput() {
+            isUpdatingPad = true;
+            updatePadCharCount();
+
+            // Clear existing timeout
+            if (padSaveTimeout) {
+                clearTimeout(padSaveTimeout);
+            }
+
+            // Set new timeout for 2 seconds
+            padSaveTimeout = setTimeout(() => {
+                isUpdatingPad = false;
+                savePadContent();
+            }, 2000);
+        }
+
         // PDF.js rendering functions
         function renderPage(num) {
             pageRendering = true;
@@ -641,12 +756,18 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         // Auto-refresh checkbox
         document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
 
+        // Pad textarea input handler
+        document.getElementById('padContent').addEventListener('input', handlePadInput);
+
         // Load files on page load
         loadFiles();
         // Start auto-refresh by default
         toggleAutoRefresh();
         // Start preview polling
         setInterval(checkPreviewUpdate, 1000);
+        // Load pad content and start polling
+        loadPadContent();
+        setInterval(loadPadContent, 2000);
     </script>
 </body>
 </html>"""
@@ -746,6 +867,63 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                         "success": True,
                         "filename": filename,
                         "timestamp": PREVIEW_STATE["timestamp"],
+                    }
+                ).encode()
+            )
+
+        except (json.JSONDecodeError, KeyError):
+            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
+            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+
+    def _serve_pad_content(self):
+        """Serve current pad content"""
+        with PAD_LOCK:
+            state = PAD_STATE.copy()
+
+        self._set_headers(content_type="application/json")
+        self.wfile.write(json.dumps(state).encode())
+
+    def _handle_pad_update(self):
+        """Handle updating the pad content"""
+        if not self._check_api_key():
+            self._set_headers(HTTPStatus.UNAUTHORIZED, "application/json")
+            self.wfile.write(json.dumps({"error": "Invalid API key"}).encode())
+            return
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            data = json.loads(body.decode())
+            content = data.get("content", "")
+
+            # Check size limit
+            if len(content) > PAD_MAX_SIZE:
+                self._set_headers(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json"
+                )
+                self.wfile.write(
+                    json.dumps(
+                        {
+                            "error": f"Content exceeds maximum size of {PAD_MAX_SIZE} bytes"
+                        }
+                    ).encode()
+                )
+                return
+
+            # Update pad state atomically
+            with PAD_LOCK:
+                PAD_STATE["content"] = content
+                PAD_STATE["timestamp"] += 1
+                timestamp = PAD_STATE["timestamp"]
+
+            self._set_headers(HTTPStatus.OK, "application/json")
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "success": True,
+                        "timestamp": timestamp,
+                        "size": len(content),
                     }
                 ).encode()
             )
