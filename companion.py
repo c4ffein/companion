@@ -18,6 +18,8 @@ Usage:
     Upload:      python companion.py upload <server_url> <file_path> --api-key KEY [--set-preview]
     List files:  python companion.py list <server_url>
     Set preview: python companion.py set-preview <server_url> <filename> --api-key KEY
+    Get pad:     python companion.py get-pad <server_url>
+    Set pad:     python companion.py set-pad <server_url> <content> --api-key KEY
 """
 
 import argparse
@@ -1178,6 +1180,64 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size:.2f} {sizes[i]}"
 
 
+def get_pad(server_url: str):
+    """Get the current pad content from the server"""
+    url = f"{server_url.rstrip('/')}/api/pad"
+
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            content = result.get("content", "")
+
+            if content:
+                print(content)
+            else:
+                print("📋 Pad is empty")
+
+            return True
+
+    except urllib.error.HTTPError as e:
+        print(f"❌ Failed to get pad: HTTP {e.code}")
+        return False
+    except Exception as e:
+        print(f"❌ Failed to get pad: {e}")
+        return False
+
+
+def set_pad(server_url: str, content: str, api_key: str):
+    """Set the pad content on the server"""
+    url = f"{server_url.rstrip('/')}/api/pad"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    data = json.dumps({"content": content}).encode()
+
+    try:
+        print(f"📝 Setting pad content ({len(content)} characters)...")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            print("✅ Pad content updated successfully!")
+            print(f"   Timestamp: {result['timestamp']}")
+            print(f"   Size: {result['size']} characters")
+            return True
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        try:
+            error_json = json.loads(error_body)
+            print(f"❌ Failed to set pad: {error_json.get('error', 'Unknown error')}")
+        except (json.JSONDecodeError, KeyError):
+            print(f"❌ Failed to set pad: HTTP {e.code}")
+        return False
+    except Exception as e:
+        print(f"❌ Failed to set pad: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Simple file sharing server and client"
@@ -1227,6 +1287,20 @@ def main():
     preview_parser.add_argument("filename", help="Filename to preview")
     preview_parser.add_argument("--api-key", required=True, help="API key (required)")
 
+    # Get pad mode
+    get_pad_parser = subparsers.add_parser("get-pad", help="Get the current pad content")
+    get_pad_parser.add_argument(
+        "server_url", help="Server URL (e.g., http://localhost:8080)"
+    )
+
+    # Set pad mode
+    set_pad_parser = subparsers.add_parser("set-pad", help="Set the pad content")
+    set_pad_parser.add_argument(
+        "server_url", help="Server URL (e.g., http://localhost:8080)"
+    )
+    set_pad_parser.add_argument("content", help="Content to set in the pad")
+    set_pad_parser.add_argument("--api-key", required=True, help="API key (required)")
+
     args = parser.parse_args()
 
     if not args.mode:
@@ -1255,6 +1329,12 @@ def main():
         sys.exit(0 if success else 1)
     elif args.mode == "set-preview":
         success = set_preview_func(args.server_url, args.filename, args.api_key)
+        sys.exit(0 if success else 1)
+    elif args.mode == "get-pad":
+        success = get_pad(args.server_url)
+        sys.exit(0 if success else 1)
+    elif args.mode == "set-pad":
+        success = set_pad(args.server_url, args.content, args.api_key)
         sys.exit(0 if success else 1)
 
 
