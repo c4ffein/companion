@@ -1192,23 +1192,13 @@ def set_pad(server_url: str, content: str, api_key: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Simple file sharing server and client"
-    )
+    parser = argparse.ArgumentParser(description="Simple file sharing server and client")
     subparsers = parser.add_subparsers(dest="mode", help="Available commands")
-
     # Server mode
     server_parser = subparsers.add_parser("server", help="Run in server mode")
-    server_parser.add_argument(
-        "--port", type=int, default=8080, help="Port to listen on (default: 8080)"
-    )
-    server_parser.add_argument(
-        "--api-key", required=True, help="API key for uploads (required)"
-    )
-    server_parser.add_argument(
-        "--debug", action="store_true", help="Enable debug logging"
-    )
-
+    server_parser.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
+    server_parser.add_argument("--api-key", required=True, help="API key for uploads (required)")
+    server_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     # Upload mode (renamed from client)
     upload_parser = subparsers.add_parser("upload", help="Upload a file to the server")
     upload_parser.add_argument(
@@ -1223,41 +1213,24 @@ def main():
         action="store_true",
         help="Automatically set this file as preview for all clients after upload",
     )
-
     # List mode
     list_parser = subparsers.add_parser("list", help="List all available files")
-    list_parser.add_argument(
-        "server_url", help="Server URL (e.g., http://localhost:8080)"
-    )
-
+    list_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     # Set preview mode
-    preview_parser = subparsers.add_parser(
-        "set-preview", help="Set the current preview for all clients"
-    )
-    preview_parser.add_argument(
-        "server_url", help="Server URL (e.g., http://localhost:8080)"
-    )
+    preview_parser = subparsers.add_parser("set-preview", help="Set the current preview for all clients")
+    preview_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     preview_parser.add_argument("filename", help="Filename to preview")
     preview_parser.add_argument("--api-key", required=True, help="API key (required)")
-
     # Get pad mode
-    get_pad_parser = subparsers.add_parser(
-        "get-pad", help="Get the current pad content"
-    )
-    get_pad_parser.add_argument(
-        "server_url", help="Server URL (e.g., http://localhost:8080)"
-    )
-
+    get_pad_parser = subparsers.add_parser("get-pad", help="Get the current pad content")
+    get_pad_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     # Set pad mode
     set_pad_parser = subparsers.add_parser("set-pad", help="Set the pad content")
-    set_pad_parser.add_argument(
-        "server_url", help="Server URL (e.g., http://localhost:8080)"
-    )
+    set_pad_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     set_pad_parser.add_argument("content", help="Content to set in the pad")
     set_pad_parser.add_argument("--api-key", required=True, help="API key (required)")
-
+    # Parse args
     args = parser.parse_args()
-
     if not args.mode:
         parser.print_help()
         sys.exit(1)
