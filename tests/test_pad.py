@@ -10,7 +10,6 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from io import BytesIO
 
 # Import the companion module
 sys.path.insert(0, "src")
