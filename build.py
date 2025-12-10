@@ -74,9 +74,9 @@ _PDFJS_WORKER = "{pdf_worker_b64}";
     # Insert after the imports section (after "from typing import ...")
     typing_import = "from typing import Dict, Optional, Tuple\n"
     if typing_import not in source:
-        print(f"❌ ERROR: Could not find typing import line in source.")
+        print("❌ ERROR: Could not find typing import line in source.")
         print(f"   Expected: {typing_import.strip()}")
-        print(f"   The source file may have been modified. Please update build.py.")
+        print("   The source file may have been modified. Please update build.py.")
         exit(1)
     source = source.replace(typing_import, f"{typing_import}{embedded_deps}\n")
 

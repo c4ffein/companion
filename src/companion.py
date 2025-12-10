@@ -115,11 +115,11 @@ def resolve_server(args) -> Tuple[str, Optional[str]]:
 
     # No server could be resolved - show helpful error
     print("Error: No server specified.", file=sys.stderr)
-    print(f"\nTo fix this, either:", file=sys.stderr)
+    print("\nTo fix this, either:", file=sys.stderr)
     print(f"  1. Create a config file at {CONFIG_PATH} with:", file=sys.stderr)
     _print_config_help()
-    print(f"\n  2. Or specify a server explicitly:", file=sys.stderr)
-    print(f"     companion upload --server-url http://localhost:8080 --api-key yourkey file.pdf", file=sys.stderr)
+    print("\n  2. Or specify a server explicitly:", file=sys.stderr)
+    print("     companion upload --server-url http://localhost:8080 --api-key yourkey file.pdf", file=sys.stderr)
     sys.exit(1)
 
 
@@ -198,8 +198,10 @@ def resolve_server_config(args) -> Tuple[int, str]:
     if not api_key:
         print("Error: API key required for server mode.", file=sys.stderr)
         print("\nTo fix this, either:", file=sys.stderr)
-        print(f"  1. Add api-key to your config at {CONFIG_PATH}", file=sys.stderr)
-        print("  2. Or specify --api-key on the command line", file=sys.stderr)
+        print(f"  1. Create a config file at {CONFIG_PATH} with:", file=sys.stderr)
+        _print_config_help()
+        print("\n  2. Or specify --api-key on the command line:", file=sys.stderr)
+        print("     companion server --api-key yourkey", file=sys.stderr)
         sys.exit(1)
 
     return port, api_key
