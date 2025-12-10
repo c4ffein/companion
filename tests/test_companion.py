@@ -123,8 +123,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "upload",
-                    self.server_url,
                     test_file,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -162,8 +163,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "upload",
-                    self.server_url,
                     test_file,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     "wrong-key",
                 ],
@@ -247,8 +249,9 @@ class FileShareE2ETest(unittest.TestCase):
                         "python3",
                         "src/companion.py",
                         "upload",
-                        self.server_url,
                         test_file,
+                        "--server-url",
+                        self.server_url,
                         "--api-key",
                         self.api_key,
                     ],
@@ -296,8 +299,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "upload",
-                    self.server_url,
                     test_file,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -346,8 +350,9 @@ class FileShareE2ETest(unittest.TestCase):
                         "python3",
                         "src/companion.py",
                         "upload",
-                        self.server_url,
                         str(filepath),
+                        "--server-url",
+                        self.server_url,
                         "--api-key",
                         self.api_key,
                     ],
@@ -385,8 +390,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "upload",
-                    self.server_url,
                     test_file,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -445,8 +451,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "upload",
-                    self.server_url,
                     test_file,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -466,8 +473,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "set-preview",
-                    self.server_url,
                     filename,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -502,8 +510,9 @@ class FileShareE2ETest(unittest.TestCase):
                 "python3",
                 "src/companion.py",
                 "set-preview",
-                self.server_url,
                 "nonexistent-file.txt",
+                "--server-url",
+                self.server_url,
                 "--api-key",
                 self.api_key,
             ],
@@ -524,8 +533,9 @@ class FileShareE2ETest(unittest.TestCase):
                 "python3",
                 "src/companion.py",
                 "set-preview",
-                self.server_url,
                 "any-file.txt",
+                "--server-url",
+                self.server_url,
                 "--api-key",
                 "wrong-key",
             ],
@@ -561,8 +571,9 @@ class FileShareE2ETest(unittest.TestCase):
                         "python3",
                         "src/companion.py",
                         "upload",
-                        self.server_url,
                         test_file,
+                        "--server-url",
+                        self.server_url,
                         "--api-key",
                         self.api_key,
                     ],
@@ -581,8 +592,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "set-preview",
-                    self.server_url,
                     filename1,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -607,8 +619,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "set-preview",
-                    self.server_url,
                     filename2,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -646,8 +659,9 @@ class FileShareE2ETest(unittest.TestCase):
                     "python3",
                     self.companion_script,
                     "upload",
-                    self.server_url,
                     test_file,
+                    "--server-url",
+                    self.server_url,
                     "--api-key",
                     self.api_key,
                 ],
@@ -709,8 +723,9 @@ class FileShareE2ETest(unittest.TestCase):
                         "python3",
                         "src/companion.py",
                         "upload",
-                        self.server_url,
                         test_file,
+                        "--server-url",
+                        self.server_url,
                         "--api-key",
                         self.api_key,
                     ],
@@ -831,6 +846,202 @@ class FileShareE2ETest(unittest.TestCase):
         self.assertIn("javascript", content_type.lower())
 
 
+class ConfigTest(unittest.TestCase):
+    """Tests for config file functionality"""
+
+    # Environment with UTF-8 encoding for subprocesses
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    def setUp(self):
+        """Create a temporary config directory"""
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_dir = Path(self.temp_dir) / ".config" / "companion"
+        self.config_dir.mkdir(parents=True)
+        self.config_file = self.config_dir / "config.json"
+
+        # Determine which version to test
+        test_version = os.environ.get("TEST_VERSION", "dev")
+        if test_version == "built":
+            self.companion_script = "companion.py"
+        else:
+            self.companion_script = "src/companion.py"
+
+    def tearDown(self):
+        """Clean up temporary directory"""
+        import shutil
+
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _run_with_home(self, args):
+        """Run companion with custom HOME directory"""
+        env = self.env.copy()
+        env["HOME"] = self.temp_dir
+        return subprocess.run(
+            ["python3", self.companion_script] + args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            env=env,
+        )
+
+    def test_01_no_config_no_server_shows_error(self):
+        """Test that missing config and no --server-url shows helpful error"""
+        result = self._run_with_home(["list"])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No server specified", result.stderr)
+        self.assertIn("config.json", result.stderr)
+        self.assertIn("--server-url", result.stderr)
+
+    def test_02_config_with_default_server(self):
+        """Test that config with default-server is used"""
+        config = {
+            "default-server": "test",
+            "servers": {"test": {"url": "http://localhost:9999", "api-key": "testkey"}},
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        # This will fail to connect, but we can verify it used the config
+        result = self._run_with_home(["list"])
+
+        # Should fail with connection error, not "no server specified"
+        self.assertNotIn("No server specified", result.stderr)
+        # The error should be about connection (Connection refused or similar)
+        self.assertIn("Failed to list files", result.stdout)
+
+    def test_03_server_flag_overrides_default(self):
+        """Test that --server flag overrides default-server"""
+        config = {
+            "default-server": "default",
+            "servers": {
+                "default": {"url": "http://localhost:1111", "api-key": "defaultkey"},
+                "other": {"url": "http://localhost:2222", "api-key": "otherkey"},
+            },
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        result = self._run_with_home(["list", "--server", "other"])
+
+        # Should fail with connection error (server resolved from config)
+        self.assertNotIn("No server specified", result.stderr)
+        self.assertIn("Failed to list files", result.stdout)
+
+    def test_04_server_url_flag_overrides_config(self):
+        """Test that --server-url flag overrides config entirely"""
+        config = {
+            "default-server": "default",
+            "servers": {"default": {"url": "http://localhost:1111", "api-key": "defaultkey"}},
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        result = self._run_with_home(["list", "--server-url", "http://localhost:3333"])
+
+        # Should fail with connection error (using --server-url)
+        self.assertNotIn("No server specified", result.stderr)
+        self.assertIn("Failed to list files", result.stdout)
+
+    def test_05_api_key_flag_overrides_config(self):
+        """Test that --api-key flag overrides config api-key"""
+        # Start a real server for this test
+        port = 8766
+        api_key = "real-api-key"
+        server_url = f"http://localhost:{port}"
+
+        config = {
+            "default-server": "test",
+            "servers": {"test": {"url": server_url, "api-key": "wrong-key-in-config"}},
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        # Start server
+        server_process = subprocess.Popen(
+            [
+                "python3",
+                self.companion_script,
+                "server",
+                "--port",
+                str(port),
+                "--api-key",
+                api_key,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=self.env,
+        )
+
+        try:
+            # Wait for server to start
+            time.sleep(1)
+
+            # Create a test file
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write("Test content")
+                test_file = f.name
+
+            try:
+                # Upload with --api-key override (should succeed)
+                result = self._run_with_home(
+                    ["upload", test_file, "--api-key", api_key]
+                )
+                self.assertEqual(result.returncode, 0, f"Upload failed: {result.stderr}")
+                self.assertIn("Upload successful", result.stdout)
+            finally:
+                Path(test_file).unlink()
+
+        finally:
+            server_process.terminate()
+            server_process.wait(timeout=5)
+
+    def test_06_nonexistent_server_name_shows_error(self):
+        """Test that --server with nonexistent name shows error"""
+        config = {
+            "default-server": "default",
+            "servers": {"default": {"url": "http://localhost:1111", "api-key": "key"}},
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        result = self._run_with_home(["list", "--server", "nonexistent"])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not found", result.stderr)
+        self.assertIn("nonexistent", result.stderr)
+        self.assertIn("default", result.stderr)  # Should show available servers
+
+    def test_07_missing_api_key_for_protected_command(self):
+        """Test that protected commands fail without api-key"""
+        config = {
+            "default-server": "test",
+            "servers": {"test": {"url": "http://localhost:9999"}},  # No api-key
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("Test")
+            test_file = f.name
+
+        try:
+            result = self._run_with_home(["upload", test_file])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("API key required", result.stderr)
+        finally:
+            Path(test_file).unlink()
+
+    def test_08_invalid_config_json_shows_warning(self):
+        """Test that invalid JSON in config shows warning but continues"""
+        self.config_file.write_text("{ invalid json }")
+
+        result = self._run_with_home(["list"])
+
+        # Should show warning about config
+        self.assertIn("Warning", result.stderr)
+        # Should still fail with "no server specified"
+        self.assertIn("No server specified", result.stderr)
+
+
 def run_tests():
     """Run the test suite"""
     # Change to project root directory (parent of tests/)
@@ -841,7 +1052,9 @@ def run_tests():
 
     # Run tests
     loader = unittest.TestLoader()
-    suite = loader.loadTestsFromTestCase(FileShareE2ETest)
+    suite = unittest.TestSuite()
+    suite.addTests(loader.loadTestsFromTestCase(FileShareE2ETest))
+    suite.addTests(loader.loadTestsFromTestCase(ConfigTest))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
 
