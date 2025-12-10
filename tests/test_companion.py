@@ -984,9 +984,7 @@ class ConfigTest(unittest.TestCase):
 
             try:
                 # Upload with --api-key override (should succeed)
-                result = self._run_with_home(
-                    ["upload", test_file, "--api-key", api_key]
-                )
+                result = self._run_with_home(["upload", test_file, "--api-key", api_key])
                 self.assertEqual(result.returncode, 0, f"Upload failed: {result.stderr}")
                 self.assertIn("Upload successful", result.stdout)
             finally:
@@ -1040,6 +1038,91 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("Warning", result.stderr)
         # Should still fail with "no server specified"
         self.assertIn("No server specified", result.stderr)
+
+    def test_09_server_mode_uses_config(self):
+        """Test that server mode uses config for port and api-key"""
+        config = {
+            "default-server": "test",
+            "servers": {"test": {"url": "http://localhost:8767", "api-key": "configkey"}},
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        # Start server using config (no --port or --api-key)
+        server_process = subprocess.Popen(
+            ["python3", self.companion_script, "server"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env={**self.env, "HOME": self.temp_dir},
+        )
+
+        try:
+            # Wait for server to start
+            time.sleep(1)
+
+            # Verify server is running on port 8767 with the config api-key
+            response = urllib.request.urlopen("http://localhost:8767/api/files")
+            self.assertEqual(response.status, 200)
+
+            # Test upload with config api-key
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write("Test")
+                test_file = f.name
+
+            try:
+                # Upload should work with config api-key
+                result = self._run_with_home(["upload", test_file])
+                self.assertEqual(result.returncode, 0, f"Upload failed: {result.stderr}")
+            finally:
+                Path(test_file).unlink()
+
+        finally:
+            server_process.terminate()
+            server_process.wait(timeout=5)
+
+    def test_10_server_mode_no_config_no_apikey_fails(self):
+        """Test that server mode without config or --api-key shows error"""
+        result = self._run_with_home(["server"])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("API key required", result.stderr)
+
+    def test_11_server_mode_cli_overrides_config(self):
+        """Test that CLI args override config in server mode"""
+        config = {
+            "default-server": "test",
+            "servers": {"test": {"url": "http://localhost:8888", "api-key": "configkey"}},
+        }
+        self.config_file.write_text(json.dumps(config))
+
+        # Start server with CLI overrides
+        server_process = subprocess.Popen(
+            ["python3", self.companion_script, "server", "--port", "8768", "--api-key", "clikey"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env={**self.env, "HOME": self.temp_dir},
+        )
+
+        try:
+            time.sleep(1)
+
+            # Should be on port 8768, not 8888
+            response = urllib.request.urlopen("http://localhost:8768/api/files")
+            self.assertEqual(response.status, 200)
+
+            # Port 8888 should not be running
+            try:
+                urllib.request.urlopen("http://localhost:8888/api/files", timeout=1)
+                self.fail("Server should not be on port 8888")
+            except urllib.error.URLError:
+                pass  # Expected
+
+        finally:
+            server_process.terminate()
+            server_process.wait(timeout=5)
 
 
 def run_tests():

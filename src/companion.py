@@ -2,15 +2,15 @@
 """
 Companion - Simple file sharing server and client
 Usage:
-    Server:      python companion.py server [--port PORT] --api-key KEY
+    Server:      python companion.py server [--port PORT] [--api-key KEY] [--server NAME]
     Upload:      python companion.py upload <file_path> [--set-preview]
     List files:  python companion.py list
     Set preview: python companion.py set-preview <filename>
     Get pad:     python companion.py get-pad
     Set pad:     python companion.py set-pad <content>
 
-Server selection (for client commands):
-    Uses default-server from ~/.config/companion/config.json
+Config file (~/.config/companion/config.json):
+    All commands use default-server from config if available.
     Override with --server <name> or --server-url <url> --api-key <key>
 """
 
@@ -136,6 +136,73 @@ def _print_config_help():
 }"""
     for line in example.split("\n"):
         print(f"     {line}", file=sys.stderr)
+
+
+def resolve_server_config(args) -> Tuple[int, str]:
+    """
+    Resolve server port and API key from args and config for server mode.
+    Returns (port, api_key) or exits with helpful error message.
+
+    Priority order:
+    1. CLI args (--port, --api-key) override config
+    2. --server (named server from config)
+    3. default-server from config
+    4. Defaults (port 8080, but api-key required)
+    """
+    config = load_config()
+
+    # Start with CLI values (may be None)
+    port = getattr(args, "port", None)
+    api_key = getattr(args, "api_key", None)
+
+    # Try to get config values
+    server_config = None
+    server_name = getattr(args, "server", None)
+
+    if server_name:
+        # Explicit --server flag
+        if not config:
+            print(f"Error: --server '{server_name}' specified but no config file found.", file=sys.stderr)
+            sys.exit(1)
+        servers = config.get("servers", {})
+        if server_name not in servers:
+            available = ", ".join(servers.keys()) if servers else "(none)"
+            print(f"Error: Server '{server_name}' not found in config.", file=sys.stderr)
+            print(f"Available servers: {available}", file=sys.stderr)
+            sys.exit(1)
+        server_config = servers[server_name]
+    elif config:
+        # Try default-server
+        default_name = config.get("default-server")
+        if default_name:
+            servers = config.get("servers", {})
+            if default_name in servers:
+                server_config = servers[default_name]
+
+    # Apply config values where CLI didn't override
+    if server_config:
+        if api_key is None:
+            api_key = server_config.get("api-key")
+        if port is None:
+            # Parse port from URL
+            url = server_config.get("url", "")
+            parsed = urllib.parse.urlparse(url)
+            if parsed.port:
+                port = parsed.port
+
+    # Apply defaults
+    if port is None:
+        port = 8080
+
+    # API key is required
+    if not api_key:
+        print("Error: API key required for server mode.", file=sys.stderr)
+        print("\nTo fix this, either:", file=sys.stderr)
+        print(f"  1. Add api-key to your config at {CONFIG_PATH}", file=sys.stderr)
+        print("  2. Or specify --api-key on the command line", file=sys.stderr)
+        sys.exit(1)
+
+    return port, api_key
 
 
 class FileShareHandler(http.server.BaseHTTPRequestHandler):
@@ -1277,9 +1344,11 @@ def main():
     subparsers = parser.add_subparsers(dest="mode", help="Available commands")
     # Server mode
     server_parser = subparsers.add_parser("server", help="Run in server mode")
-    server_parser.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
-    server_parser.add_argument("--api-key", required=True, help="API key for uploads (required)")
+    server_parser.add_argument("--port", type=int, help="Port to listen on (default: 8080 or from config)")
+    server_parser.add_argument("--api-key", help="API key for uploads (required, can be from config)")
+    server_parser.add_argument("--server", help="Named server from config file")
     server_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+
     # Helper to add common server selection args to client subparsers
     def add_server_args(subparser, needs_api_key=True):
         subparser.add_argument("--server", help="Named server from config file")
@@ -1324,7 +1393,8 @@ def main():
             format="[%(asctime)s] %(levelname)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        run_server(args.port, args.api_key)
+        port, api_key = resolve_server_config(args)
+        run_server(port, api_key)
     elif args.mode == "upload":
         server_url, api_key = resolve_server(args)
         if not api_key:

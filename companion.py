@@ -14,12 +14,16 @@ LICENSE NOTICE:
 
 Companion - Simple file sharing server and client
 Usage:
-    Server:      python companion.py server [--port PORT] --api-key KEY
-    Upload:      python companion.py upload <server_url> <file_path> --api-key KEY [--set-preview]
-    List files:  python companion.py list <server_url>
-    Set preview: python companion.py set-preview <server_url> <filename> --api-key KEY
-    Get pad:     python companion.py get-pad <server_url>
-    Set pad:     python companion.py set-pad <server_url> <content> --api-key KEY
+    Server:      python companion.py server [--port PORT] [--api-key KEY] [--server NAME]
+    Upload:      python companion.py upload <file_path> [--set-preview]
+    List files:  python companion.py list
+    Set preview: python companion.py set-preview <filename>
+    Get pad:     python companion.py get-pad
+    Set pad:     python companion.py set-pad <content>
+
+Config file (~/.config/companion/config.json):
+    All commands use default-server from config if available.
+    Override with --server <name> or --server-url <url> --api-key <key>
 """
 
 import argparse
@@ -34,8 +38,9 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from http import HTTPStatus
+from pathlib import Path
 from threading import Lock
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 # Embedded PDF.js files for offline use (added by build.py)
 # Base64-encoded to avoid escaping issues
@@ -57,8 +62,165 @@ PAD_STATE = {"content": "", "timestamp": 0}
 PAD_LOCK = Lock()
 PAD_MAX_SIZE = 10 * 1024 * 1024  # 10MB character limit
 
+# Config file path
+CONFIG_PATH = Path.home() / ".config" / "companion" / "config.json"
+
 # Setup logger
 logger = logging.getLogger("companion")
+
+
+def load_config() -> Optional[dict]:
+    """Load config from ~/.config/companion/config.json if it exists."""
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: Failed to load config from {CONFIG_PATH}: {e}", file=sys.stderr)
+    return None
+
+
+def resolve_server(args) -> Tuple[str, Optional[str]]:
+    """
+    Resolve server URL and API key from args and config.
+    Returns (url, api_key) or exits with helpful error message.
+
+    Priority order:
+    1. --server-url (explicit URL, api-key from --api-key or None)
+    2. --server (named server from config)
+    3. default-server from config
+    """
+    config = load_config()
+
+    # Priority 1: Explicit --server-url
+    if hasattr(args, "server_url") and args.server_url:
+        api_key = getattr(args, "api_key", None)
+        return args.server_url, api_key
+
+    # Priority 2: Named --server from config
+    if hasattr(args, "server") and args.server:
+        if not config:
+            print(f"Error: --server '{args.server}' specified but no config file found.", file=sys.stderr)
+            print(f"\nCreate a config file at {CONFIG_PATH} with:", file=sys.stderr)
+            _print_config_help()
+            sys.exit(1)
+
+        servers = config.get("servers", {})
+        if args.server not in servers:
+            available = ", ".join(servers.keys()) if servers else "(none)"
+            print(f"Error: Server '{args.server}' not found in config.", file=sys.stderr)
+            print(f"Available servers: {available}", file=sys.stderr)
+            sys.exit(1)
+
+        server_config = servers[args.server]
+        url = server_config.get("url")
+        api_key = getattr(args, "api_key", None) or server_config.get("api-key")
+        return url, api_key
+
+    # Priority 3: default-server from config
+    if config:
+        default_name = config.get("default-server")
+        if default_name:
+            servers = config.get("servers", {})
+            if default_name in servers:
+                server_config = servers[default_name]
+                url = server_config.get("url")
+                api_key = getattr(args, "api_key", None) or server_config.get("api-key")
+                return url, api_key
+            else:
+                print(f"Error: default-server '{default_name}' not found in servers.", file=sys.stderr)
+                sys.exit(1)
+
+    # No server could be resolved - show helpful error
+    print("Error: No server specified.", file=sys.stderr)
+    print(f"\nTo fix this, either:", file=sys.stderr)
+    print(f"  1. Create a config file at {CONFIG_PATH} with:", file=sys.stderr)
+    _print_config_help()
+    print(f"\n  2. Or specify a server explicitly:", file=sys.stderr)
+    print(f"     companion upload --server-url http://localhost:8080 --api-key yourkey file.pdf", file=sys.stderr)
+    sys.exit(1)
+
+
+def _print_config_help():
+    """Print example config file structure."""
+    example = """{
+  "default-server": "myserver",
+  "servers": {
+    "myserver": {
+      "url": "http://localhost:8080",
+      "api-key": "yourkey"
+    }
+  }
+}"""
+    for line in example.split("\n"):
+        print(f"     {line}", file=sys.stderr)
+
+
+def resolve_server_config(args) -> Tuple[int, str]:
+    """
+    Resolve server port and API key from args and config for server mode.
+    Returns (port, api_key) or exits with helpful error message.
+
+    Priority order:
+    1. CLI args (--port, --api-key) override config
+    2. --server (named server from config)
+    3. default-server from config
+    4. Defaults (port 8080, but api-key required)
+    """
+    config = load_config()
+
+    # Start with CLI values (may be None)
+    port = getattr(args, "port", None)
+    api_key = getattr(args, "api_key", None)
+
+    # Try to get config values
+    server_config = None
+    server_name = getattr(args, "server", None)
+
+    if server_name:
+        # Explicit --server flag
+        if not config:
+            print(f"Error: --server '{server_name}' specified but no config file found.", file=sys.stderr)
+            sys.exit(1)
+        servers = config.get("servers", {})
+        if server_name not in servers:
+            available = ", ".join(servers.keys()) if servers else "(none)"
+            print(f"Error: Server '{server_name}' not found in config.", file=sys.stderr)
+            print(f"Available servers: {available}", file=sys.stderr)
+            sys.exit(1)
+        server_config = servers[server_name]
+    elif config:
+        # Try default-server
+        default_name = config.get("default-server")
+        if default_name:
+            servers = config.get("servers", {})
+            if default_name in servers:
+                server_config = servers[default_name]
+
+    # Apply config values where CLI didn't override
+    if server_config:
+        if api_key is None:
+            api_key = server_config.get("api-key")
+        if port is None:
+            # Parse port from URL
+            url = server_config.get("url", "")
+            parsed = urllib.parse.urlparse(url)
+            if parsed.port:
+                port = parsed.port
+
+    # Apply defaults
+    if port is None:
+        port = 8080
+
+    # API key is required
+    if not api_key:
+        print("Error: API key required for server mode.", file=sys.stderr)
+        print("\nTo fix this, either:", file=sys.stderr)
+        print(f"  1. Add api-key to your config at {CONFIG_PATH}", file=sys.stderr)
+        print("  2. Or specify --api-key on the command line", file=sys.stderr)
+        sys.exit(1)
+
+    return port, api_key
 
 
 class FileShareHandler(http.server.BaseHTTPRequestHandler):
@@ -1229,35 +1391,41 @@ def main():
     subparsers = parser.add_subparsers(dest="mode", help="Available commands")
     # Server mode
     server_parser = subparsers.add_parser("server", help="Run in server mode")
-    server_parser.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
-    server_parser.add_argument("--api-key", required=True, help="API key for uploads (required)")
+    server_parser.add_argument("--port", type=int, help="Port to listen on (default: 8080 or from config)")
+    server_parser.add_argument("--api-key", help="API key for uploads (required, can be from config)")
+    server_parser.add_argument("--server", help="Named server from config file")
     server_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    # Upload mode (renamed from client)
+
+    # Helper to add common server selection args to client subparsers
+    def add_server_args(subparser, needs_api_key=True):
+        subparser.add_argument("--server", help="Named server from config file")
+        subparser.add_argument("--server-url", help="Explicit server URL (e.g., http://localhost:8080)")
+        if needs_api_key:
+            subparser.add_argument("--api-key", help="API key (overrides config)")
+
+    # Upload mode
     upload_parser = subparsers.add_parser("upload", help="Upload a file to the server")
-    upload_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     upload_parser.add_argument("file_path", help="Path to file to upload")
-    upload_parser.add_argument("--api-key", required=True, help="API key for upload (required)")
     upload_parser.add_argument(
         "--set-preview",
         action="store_true",
         help="Automatically set this file as preview for all clients after upload",
     )
+    add_server_args(upload_parser, needs_api_key=True)
     # List mode
     list_parser = subparsers.add_parser("list", help="List all available files")
-    list_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
+    add_server_args(list_parser, needs_api_key=False)
     # Set preview mode
     preview_parser = subparsers.add_parser("set-preview", help="Set the current preview for all clients")
-    preview_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     preview_parser.add_argument("filename", help="Filename to preview")
-    preview_parser.add_argument("--api-key", required=True, help="API key (required)")
+    add_server_args(preview_parser, needs_api_key=True)
     # Get pad mode
     get_pad_parser = subparsers.add_parser("get-pad", help="Get the current pad content")
-    get_pad_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
+    add_server_args(get_pad_parser, needs_api_key=False)
     # Set pad mode
     set_pad_parser = subparsers.add_parser("set-pad", help="Set the pad content")
-    set_pad_parser.add_argument("server_url", help="Server URL (e.g., http://localhost:8080)")
     set_pad_parser.add_argument("content", help="Content to set in the pad")
-    set_pad_parser.add_argument("--api-key", required=True, help="API key (required)")
+    add_server_args(set_pad_parser, needs_api_key=True)
     # Parse args
     args = parser.parse_args()
     if not args.mode:
@@ -1272,26 +1440,44 @@ def main():
             format="[%(asctime)s] %(levelname)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
-        run_server(args.port, args.api_key)
+        port, api_key = resolve_server_config(args)
+        run_server(port, api_key)
     elif args.mode == "upload":
+        server_url, api_key = resolve_server(args)
+        if not api_key:
+            print("Error: API key required for upload.", file=sys.stderr)
+            print("Provide --api-key or configure api-key in config file.", file=sys.stderr)
+            sys.exit(1)
         success = upload_file(
-            args.server_url,
+            server_url,
             args.file_path,
-            args.api_key,
+            api_key,
             set_preview=args.set_preview,
         )
         sys.exit(0 if success else 1)
     elif args.mode == "list":
-        success = list_files(args.server_url)
+        server_url, _ = resolve_server(args)
+        success = list_files(server_url)
         sys.exit(0 if success else 1)
     elif args.mode == "set-preview":
-        success = set_preview_func(args.server_url, args.filename, args.api_key)
+        server_url, api_key = resolve_server(args)
+        if not api_key:
+            print("Error: API key required for set-preview.", file=sys.stderr)
+            print("Provide --api-key or configure api-key in config file.", file=sys.stderr)
+            sys.exit(1)
+        success = set_preview_func(server_url, args.filename, api_key)
         sys.exit(0 if success else 1)
     elif args.mode == "get-pad":
-        success = get_pad(args.server_url)
+        server_url, _ = resolve_server(args)
+        success = get_pad(server_url)
         sys.exit(0 if success else 1)
     elif args.mode == "set-pad":
-        success = set_pad(args.server_url, args.content, args.api_key)
+        server_url, api_key = resolve_server(args)
+        if not api_key:
+            print("Error: API key required for set-pad.", file=sys.stderr)
+            print("Provide --api-key or configure api-key in config file.", file=sys.stderr)
+            sys.exit(1)
+        success = set_pad(server_url, args.content, api_key)
         sys.exit(0 if success else 1)
 
 
