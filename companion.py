@@ -1330,6 +1330,66 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size:.2f} {sizes[i]}"
 
 
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitize filename to only allow a-z, A-Z, 0-9, dash (-), and dot (.), everything else converted to underscore (_).
+    """
+    return "".join(
+        (char if char in "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm0123456789-." else "_")
+        for char in filename
+    )
+
+
+def download_file(server_url: str, filename: str, output_dir: Optional[str] = None) -> bool:
+    """Download a file from the server"""
+    # Determine output directory
+    if output_dir:
+        dest_dir = Path(output_dir)
+        if not dest_dir.is_dir():
+            print(f"❌ Error: Output path is not a directory: {output_dir}", file=sys.stderr)
+            return False
+    else:
+        dest_dir = Path.cwd()
+
+    # Sanitize filename for safe local storage
+    safe_filename = sanitize_filename(filename)
+    dest_path = dest_dir / safe_filename
+
+    # Check if file already exists (no overwriting)
+    if dest_path.exists():
+        print(f"❌ Error: File already exists: {dest_path}", file=sys.stderr)
+        print("   Remove the existing file or use a different output directory.", file=sys.stderr)
+        return False
+
+    # Download the file
+    url = f"{server_url.rstrip('/')}/download/{urllib.parse.quote(filename)}"
+
+    try:
+        print(f"📥 Downloading {filename}...")
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req) as response:
+            content = response.read()
+
+            # Write to file
+            with open(dest_path, "wb") as f:
+                f.write(content)
+
+            print(f"✅ Downloaded successfully!")
+            print(f"   Saved to: {dest_path}")
+            print(f"   Size: {format_file_size(len(content))}")
+            return True
+
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"❌ Error: File not found on server: {filename}", file=sys.stderr)
+        else:
+            print(f"❌ Failed to download: HTTP {e.code}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"❌ Failed to download: {e}", file=sys.stderr)
+        return False
+
+
 def get_pad(server_url: str):
     """Get the current pad content from the server"""
     url = f"{server_url.rstrip('/')}/api/pad"
@@ -1417,6 +1477,11 @@ def main():
     # List mode
     list_parser = subparsers.add_parser("list", help="List all available files")
     add_server_args(list_parser, needs_api_key=False)
+    # Download mode
+    download_parser = subparsers.add_parser("download", help="Download a file from the server")
+    download_parser.add_argument("filename", help="Name of the file to download")
+    download_parser.add_argument("-o", "--output", help="Output directory (default: current directory)")
+    add_server_args(download_parser, needs_api_key=False)
     # Set preview mode
     preview_parser = subparsers.add_parser("set-preview", help="Set the current preview for all clients")
     preview_parser.add_argument("filename", help="Filename to preview")
