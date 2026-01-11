@@ -4,6 +4,7 @@ Companion - Simple file sharing server and client
 Usage:
     Server:      python companion.py server [--port PORT] [--api-key KEY] [--server NAME]
     Upload:      python companion.py upload <file_path> [--set-preview]
+    Download:    python companion.py download <filename> [-o DIR]
     List files:  python companion.py list
     Set preview: python companion.py set-preview <filename>
     Get pad:     python companion.py get-pad
@@ -1303,35 +1304,28 @@ def download_file(server_url: str, filename: str, output_dir: Optional[str] = No
             return False
     else:
         dest_dir = Path.cwd()
-
     # Sanitize filename for safe local storage
     safe_filename = sanitize_filename(filename)
     dest_path = dest_dir / safe_filename
-
     # Check if file already exists (no overwriting)
     if dest_path.exists():
         print(f"❌ Error: File already exists: {dest_path}", file=sys.stderr)
         print("   Remove the existing file or use a different output directory.", file=sys.stderr)
         return False
-
     # Download the file
     url = f"{server_url.rstrip('/')}/download/{urllib.parse.quote(filename)}"
-
     try:
         print(f"📥 Downloading {filename}...")
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req) as response:
             content = response.read()
-
             # Write to file
             with open(dest_path, "wb") as f:
                 f.write(content)
-
-            print(f"✅ Downloaded successfully!")
+            print("✅ Downloaded successfully!")
             print(f"   Saved to: {dest_path}")
             print(f"   Size: {format_file_size(len(content))}")
             return True
-
     except urllib.error.HTTPError as e:
         if e.code == 404:
             print(f"❌ Error: File not found on server: {filename}", file=sys.stderr)
@@ -1352,14 +1346,11 @@ def get_pad(server_url: str):
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             content = result.get("content", "")
-
             if content:
                 print(content)
             else:
                 print("📋 Pad is empty")
-
             return True
-
     except urllib.error.HTTPError as e:
         print(f"❌ Failed to get pad: HTTP {e.code}")
         return False
@@ -1376,18 +1367,15 @@ def set_pad(server_url: str, content: str, api_key: str):
         "Content-Type": "application/json",
     }
     data = json.dumps({"content": content}).encode()
-
     try:
         print(f"📝 Setting pad content ({len(content)} characters)...")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             print("✅ Pad content updated successfully!")
             print(f"   Timestamp: {result['timestamp']}")
             print(f"   Size: {result['size']} characters")
             return True
-
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         try:
@@ -1410,14 +1398,12 @@ def main():
     server_parser.add_argument("--api-key", help="API key for uploads (required, can be from config)")
     server_parser.add_argument("--server", help="Named server from config file")
     server_parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-
     # Helper to add common server selection args to client subparsers
     def add_server_args(subparser, needs_api_key=True):
         subparser.add_argument("--server", help="Named server from config file")
         subparser.add_argument("--server-url", help="Explicit server URL (e.g., http://localhost:8080)")
         if needs_api_key:
             subparser.add_argument("--api-key", help="API key (overrides config)")
-
     # Upload mode
     upload_parser = subparsers.add_parser("upload", help="Upload a file to the server")
     upload_parser.add_argument("file_path", help="Path to file to upload")
@@ -1451,7 +1437,6 @@ def main():
     if not args.mode:
         parser.print_help()
         sys.exit(1)
-
     if args.mode == "server":
         # Configure logging
         log_level = logging.DEBUG if args.debug else logging.INFO
@@ -1478,6 +1463,10 @@ def main():
     elif args.mode == "list":
         server_url, _ = resolve_server(args)
         success = list_files(server_url)
+        sys.exit(0 if success else 1)
+    elif args.mode == "download":
+        server_url, _ = resolve_server(args)
+        success = download_file(server_url, args.filename, args.output)
         sys.exit(0 if success else 1)
     elif args.mode == "set-preview":
         server_url, api_key = resolve_server(args)

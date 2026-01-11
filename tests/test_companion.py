@@ -647,11 +647,9 @@ class FileShareE2ETest(unittest.TestCase):
         """Test setting preview via direct API call"""
         # Upload a test file
         test_content = "Direct API test"
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write(test_content)
             test_file = f.name
-
         try:
             # Upload
             result = subprocess.run(
@@ -672,9 +670,7 @@ class FileShareE2ETest(unittest.TestCase):
                 env=self.env,
             )
             self.assertEqual(result.returncode, 0)
-
             filename = Path(test_file).name
-
             # Set preview via direct API call
             preview_data = json.dumps({"filename": filename}).encode()
             req = urllib.request.Request(
@@ -686,22 +682,17 @@ class FileShareE2ETest(unittest.TestCase):
                 },
                 method="POST",
             )
-
             response = urllib.request.urlopen(req)
             result_json = json.loads(response.read().decode())
-
             self.assertEqual(response.status, 200)
             self.assertTrue(result_json["success"])
             self.assertEqual(result_json["filename"], filename)
             self.assertGreater(result_json["timestamp"], 0)
-
             # Verify state
             state_response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
             state = json.loads(state_response.read().decode())
-
             self.assertEqual(state["filename"], filename)
             self.assertEqual(state["timestamp"], result_json["timestamp"])
-
         finally:
             Path(test_file).unlink()
 
@@ -737,7 +728,6 @@ class FileShareE2ETest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0)
                 filenames.append(Path(test_file).name)
-
             # Set preview rapidly for each file
             timestamps = []
             for filename in filenames:
@@ -751,11 +741,9 @@ class FileShareE2ETest(unittest.TestCase):
                     },
                     method="POST",
                 )
-
                 response = urllib.request.urlopen(req)
                 result_json = json.loads(response.read().decode())
                 timestamps.append(result_json["timestamp"])
-
             # Verify timestamps increment monotonically
             for i in range(1, len(timestamps)):
                 self.assertEqual(
@@ -763,14 +751,11 @@ class FileShareE2ETest(unittest.TestCase):
                     timestamps[i - 1] + 1,
                     f"Timestamp should increment by 1: {timestamps}",
                 )
-
             # Verify final state
             state_response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
             state = json.loads(state_response.read().decode())
-
             self.assertEqual(state["filename"], filenames[-1])
             self.assertEqual(state["timestamp"], timestamps[-1])
-
         finally:
             for test_file in test_files:
                 Path(test_file).unlink()
@@ -781,18 +766,15 @@ class FileShareE2ETest(unittest.TestCase):
         test_version = os.environ.get("TEST_VERSION", "dev")
         if test_version != "built":
             self.skipTest("This test only applies to the built version")
-
         # Read the cached PDF.js library file
         cache_path = Path("js_deps/pdf.min.mjs")
         self.assertTrue(cache_path.exists(), "Cached PDF.js library not found")
 
         with open(cache_path, "r", encoding="utf-8") as f:
             expected_content = f.read()
-
         # Fetch from /deps/ endpoint
         response = urllib.request.urlopen(f"{self.server_url}/deps/pdf.min.mjs")
         served_content = response.read().decode("utf-8")
-
         # Verify they match exactly
         self.assertEqual(response.status, 200)
         self.assertEqual(
@@ -805,7 +787,6 @@ class FileShareE2ETest(unittest.TestCase):
             expected_content,
             "Served PDF.js library does not match cached file",
         )
-
         # Verify content type header
         content_type = response.headers.get("Content-Type")
         self.assertIn("javascript", content_type.lower())
@@ -816,18 +797,14 @@ class FileShareE2ETest(unittest.TestCase):
         test_version = os.environ.get("TEST_VERSION", "dev")
         if test_version != "built":
             self.skipTest("This test only applies to the built version")
-
         # Read the cached PDF.js worker file
         cache_path = Path("js_deps/pdf.worker.min.mjs")
         self.assertTrue(cache_path.exists(), "Cached PDF.js worker not found")
-
         with open(cache_path, "r", encoding="utf-8") as f:
             expected_content = f.read()
-
         # Fetch from /deps/ endpoint
         response = urllib.request.urlopen(f"{self.server_url}/deps/pdf.worker.min.mjs")
         served_content = response.read().decode("utf-8")
-
         # Verify they match exactly
         self.assertEqual(response.status, 200)
         self.assertEqual(
@@ -840,26 +817,209 @@ class FileShareE2ETest(unittest.TestCase):
             expected_content,
             "Served PDF.js worker does not match cached file",
         )
-
         # Verify content type header
         content_type = response.headers.get("Content-Type")
         self.assertIn("javascript", content_type.lower())
 
+    def test_20_download_file_via_cli(self):
+        """Test downloading a file using the download command"""
+        # First upload a file
+        test_content = "Download test content"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(test_content)
+            test_file = f.name
+        try:
+            # Upload
+            upload_result = subprocess.run(
+                [
+                    "python3",
+                    self.companion_script,
+                    "upload",
+                    test_file,
+                    "--server-url",
+                    self.server_url,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(upload_result.returncode, 0)
+            filename = Path(test_file).name
+            # Download to temp directory
+            with tempfile.TemporaryDirectory() as download_dir:
+                result = subprocess.run(
+                    [
+                        "python3",
+                        self.companion_script,
+                        "download",
+                        filename,
+                        "-o",
+                        download_dir,
+                        "--server-url",
+                        self.server_url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    env=self.env,
+                )
+                self.assertEqual(result.returncode, 0, f"Download failed: {result.stderr}")
+                self.assertIn("Downloaded successfully", result.stdout)
+                # Verify file exists and content matches
+                downloaded_file = Path(download_dir) / filename
+                self.assertTrue(downloaded_file.exists())
+                self.assertEqual(downloaded_file.read_text(), test_content)
+        finally:
+            Path(test_file).unlink()
+
+    def test_21_download_nonexistent_file(self):
+        """Test that downloading nonexistent file fails gracefully"""
+        with tempfile.TemporaryDirectory() as download_dir:
+            result = subprocess.run(
+                [
+                    "python3",
+                    self.companion_script,
+                    "download",
+                    "nonexistent-file.txt",
+                    "-o",
+                    download_dir,
+                    "--server-url",
+                    self.server_url,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not found", result.stderr.lower())
+
+    def test_22_download_no_overwrite(self):
+        """Test that download refuses to overwrite existing files"""
+        # First upload a file
+        test_content = "Original content"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write(test_content)
+            test_file = f.name
+        try:
+            # Upload
+            upload_result = subprocess.run(
+                [
+                    "python3",
+                    self.companion_script,
+                    "upload",
+                    test_file,
+                    "--server-url",
+                    self.server_url,
+                    "--api-key",
+                    self.api_key,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(upload_result.returncode, 0)
+            filename = Path(test_file).name
+            # Create existing file in download dir
+            with tempfile.TemporaryDirectory() as download_dir:
+                existing_file = Path(download_dir) / filename
+                existing_file.write_text("Existing content - should not be overwritten")
+                # Try to download (should fail)
+                result = subprocess.run(
+                    [
+                        "python3",
+                        self.companion_script,
+                        "download",
+                        filename,
+                        "-o",
+                        download_dir,
+                        "--server-url",
+                        self.server_url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    env=self.env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("already exists", result.stderr)
+                # Verify original content was preserved
+                self.assertEqual(existing_file.read_text(), "Existing content - should not be overwritten")
+        finally:
+            Path(test_file).unlink()
+
+    def test_23_download_sanitizes_filename(self):
+        """Test that download sanitizes filenames with special characters"""
+        # Upload a file with special characters in name via API
+        test_content = b"Sanitize test content"
+        original_filename = "test file (copy).txt"
+        sanitized_filename = "test_file__copy_.txt"
+        # Upload via API with special filename
+        boundary = "----TestBoundary123"
+        body = (
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="{original_filename}"\r\n'
+                f"Content-Type: text/plain\r\n\r\n"
+            ).encode()
+            + test_content
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
+        req = urllib.request.Request(
+            f"{self.server_url}/api/upload",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+        urllib.request.urlopen(req)
+        # Download to temp directory
+        with tempfile.TemporaryDirectory() as download_dir:
+            result = subprocess.run(
+                [
+                    "python3",
+                    self.companion_script,
+                    "download",
+                    original_filename,
+                    "-o",
+                    download_dir,
+                    "--server-url",
+                    self.server_url,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+                env=self.env,
+            )
+            self.assertEqual(result.returncode, 0, f"Download failed: {result.stderr}")
+            # Verify sanitized filename was used
+            downloaded_file = Path(download_dir) / sanitized_filename
+            self.assertTrue(downloaded_file.exists(), f"Expected {sanitized_filename} but it doesn't exist")
+            self.assertEqual(downloaded_file.read_bytes(), test_content)
+
 
 class ConfigTest(unittest.TestCase):
     """Tests for config file functionality"""
-
     # Environment with UTF-8 encoding for subprocesses
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-
     def setUp(self):
         """Create a temporary config directory"""
         self.temp_dir = tempfile.mkdtemp()
         self.config_dir = Path(self.temp_dir) / ".config" / "companion"
         self.config_dir.mkdir(parents=True)
         self.config_file = self.config_dir / "config.json"
-
         # Determine which version to test
         test_version = os.environ.get("TEST_VERSION", "dev")
         if test_version == "built":
@@ -870,7 +1030,6 @@ class ConfigTest(unittest.TestCase):
     def tearDown(self):
         """Clean up temporary directory"""
         import shutil
-
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _run_with_home(self, args):
@@ -889,7 +1048,6 @@ class ConfigTest(unittest.TestCase):
     def test_01_no_config_no_server_shows_error(self):
         """Test that missing config and no --server-url shows helpful error"""
         result = self._run_with_home(["list"])
-
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No server specified", result.stderr)
         self.assertIn("config.json", result.stderr)
@@ -902,10 +1060,8 @@ class ConfigTest(unittest.TestCase):
             "servers": {"test": {"url": "http://localhost:9999", "api-key": "testkey"}},
         }
         self.config_file.write_text(json.dumps(config))
-
         # This will fail to connect, but we can verify it used the config
         result = self._run_with_home(["list"])
-
         # Should fail with connection error, not "no server specified"
         self.assertNotIn("No server specified", result.stderr)
         # The error should be about connection (Connection refused or similar)
@@ -921,9 +1077,7 @@ class ConfigTest(unittest.TestCase):
             },
         }
         self.config_file.write_text(json.dumps(config))
-
         result = self._run_with_home(["list", "--server", "other"])
-
         # Should fail with connection error (server resolved from config)
         self.assertNotIn("No server specified", result.stderr)
         self.assertIn("Failed to list files", result.stdout)
@@ -935,9 +1089,7 @@ class ConfigTest(unittest.TestCase):
             "servers": {"default": {"url": "http://localhost:1111", "api-key": "defaultkey"}},
         }
         self.config_file.write_text(json.dumps(config))
-
         result = self._run_with_home(["list", "--server-url", "http://localhost:3333"])
-
         # Should fail with connection error (using --server-url)
         self.assertNotIn("No server specified", result.stderr)
         self.assertIn("Failed to list files", result.stdout)
@@ -948,13 +1100,11 @@ class ConfigTest(unittest.TestCase):
         port = 8766
         api_key = "real-api-key"
         server_url = f"http://localhost:{port}"
-
         config = {
             "default-server": "test",
             "servers": {"test": {"url": server_url, "api-key": "wrong-key-in-config"}},
         }
         self.config_file.write_text(json.dumps(config))
-
         # Start server
         server_process = subprocess.Popen(
             [
@@ -972,16 +1122,13 @@ class ConfigTest(unittest.TestCase):
             encoding="utf-8",
             env=self.env,
         )
-
         try:
             # Wait for server to start
             time.sleep(1)
-
             # Create a test file
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
                 f.write("Test content")
                 test_file = f.name
-
             try:
                 # Upload with --api-key override (should succeed)
                 result = self._run_with_home(["upload", test_file, "--api-key", api_key])
@@ -989,7 +1136,6 @@ class ConfigTest(unittest.TestCase):
                 self.assertIn("Upload successful", result.stdout)
             finally:
                 Path(test_file).unlink()
-
         finally:
             server_process.terminate()
             server_process.wait(timeout=5)
@@ -1001,9 +1147,7 @@ class ConfigTest(unittest.TestCase):
             "servers": {"default": {"url": "http://localhost:1111", "api-key": "key"}},
         }
         self.config_file.write_text(json.dumps(config))
-
         result = self._run_with_home(["list", "--server", "nonexistent"])
-
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not found", result.stderr)
         self.assertIn("nonexistent", result.stderr)
@@ -1016,11 +1160,9 @@ class ConfigTest(unittest.TestCase):
             "servers": {"test": {"url": "http://localhost:9999"}},  # No api-key
         }
         self.config_file.write_text(json.dumps(config))
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("Test")
             test_file = f.name
-
         try:
             result = self._run_with_home(["upload", test_file])
             self.assertNotEqual(result.returncode, 0)
@@ -1031,9 +1173,7 @@ class ConfigTest(unittest.TestCase):
     def test_08_invalid_config_json_shows_warning(self):
         """Test that invalid JSON in config shows warning but continues"""
         self.config_file.write_text("{ invalid json }")
-
         result = self._run_with_home(["list"])
-
         # Should show warning about config
         self.assertIn("Warning", result.stderr)
         # Should still fail with "no server specified"
@@ -1046,7 +1186,6 @@ class ConfigTest(unittest.TestCase):
             "servers": {"test": {"url": "http://localhost:8767", "api-key": "configkey"}},
         }
         self.config_file.write_text(json.dumps(config))
-
         # Start server using config (no --port or --api-key)
         server_process = subprocess.Popen(
             ["python3", self.companion_script, "server"],
@@ -1056,27 +1195,22 @@ class ConfigTest(unittest.TestCase):
             encoding="utf-8",
             env={**self.env, "HOME": self.temp_dir},
         )
-
         try:
             # Wait for server to start
             time.sleep(1)
-
             # Verify server is running on port 8767 with the config api-key
             response = urllib.request.urlopen("http://localhost:8767/api/files")
             self.assertEqual(response.status, 200)
-
             # Test upload with config api-key
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
                 f.write("Test")
                 test_file = f.name
-
             try:
                 # Upload should work with config api-key
                 result = self._run_with_home(["upload", test_file])
                 self.assertEqual(result.returncode, 0, f"Upload failed: {result.stderr}")
             finally:
                 Path(test_file).unlink()
-
         finally:
             server_process.terminate()
             server_process.wait(timeout=5)
@@ -1084,7 +1218,6 @@ class ConfigTest(unittest.TestCase):
     def test_10_server_mode_no_config_no_apikey_fails(self):
         """Test that server mode without config or --api-key shows error"""
         result = self._run_with_home(["server"])
-
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("API key required", result.stderr)
 
@@ -1095,7 +1228,6 @@ class ConfigTest(unittest.TestCase):
             "servers": {"test": {"url": "http://localhost:8888", "api-key": "configkey"}},
         }
         self.config_file.write_text(json.dumps(config))
-
         # Start server with CLI overrides
         server_process = subprocess.Popen(
             ["python3", self.companion_script, "server", "--port", "8768", "--api-key", "clikey"],
@@ -1105,21 +1237,17 @@ class ConfigTest(unittest.TestCase):
             encoding="utf-8",
             env={**self.env, "HOME": self.temp_dir},
         )
-
         try:
             time.sleep(1)
-
             # Should be on port 8768, not 8888
             response = urllib.request.urlopen("http://localhost:8768/api/files")
             self.assertEqual(response.status, 200)
-
             # Port 8888 should not be running
             try:
                 urllib.request.urlopen("http://localhost:8888/api/files", timeout=1)
                 self.fail("Server should not be on port 8888")
             except urllib.error.URLError:
                 pass  # Expected
-
         finally:
             server_process.terminate()
             server_process.wait(timeout=5)
@@ -1129,10 +1257,8 @@ def run_tests():
     """Run the test suite"""
     # Change to project root directory (parent of tests/)
     import os
-
     project_root = Path(__file__).parent.parent
     os.chdir(project_root)
-
     # Run tests
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -1140,7 +1266,6 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(ConfigTest))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
-
     return result.wasSuccessful()
 
 
