@@ -427,9 +427,17 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         .nav-button:hover { background: #f5f5f5; }
         .nav-button.active { color: #007bff; background: #f0f8ff; border-top: 3px solid #007bff; }
         .nav-button:not(:last-child) { border-right: 1px solid #e0e0e0; }
+        .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #333; color: white; padding: 12px 40px 12px 16px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; display: none; max-width: 90%; }
+        .toast.show { display: block; }
+        .toast-close { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: white; font-size: 18px; cursor: pointer; padding: 0 4px; opacity: 0.7; }
+        .toast-close:hover { opacity: 1; background: none; }
     </style>
 </head>
 <body>
+    <div id="storageToast" class="toast">
+        Could not manage API key through browser storage
+        <button class="toast-close" onclick="document.getElementById('storageToast').classList.remove('show')">&times;</button>
+    </div>
     <h1>📁 Companion</h1>
 
     <div id="uploadTab" class="tab-content active">
@@ -971,6 +979,79 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         // Pad textarea input handler
         document.getElementById('padContent').addEventListener('input', handlePadInput);
 
+        // API key localStorage persistence
+        const API_KEY_STORAGE_KEY = 'companion_api_key';
+        let storageGetFailed = false;
+        let storageSetFailed = false;
+        let storageToastShown = false;
+
+        function showStorageError(operation, error) {
+            if (!storageToastShown) {
+                storageToastShown = true;
+                document.getElementById('storageToast').classList.add('show');
+            }
+            if (operation === 'get' && !storageGetFailed) {
+                storageGetFailed = true;
+                console.error('Could not read API key from browser storage:', error);
+            }
+            if (operation === 'set' && !storageSetFailed) {
+                storageSetFailed = true;
+                console.error('Could not save API key to browser storage:', error);
+            }
+        }
+
+        function saveApiKeyToStorage(value) {
+            try {
+                localStorage.setItem(API_KEY_STORAGE_KEY, value);
+            } catch (e) {
+                showStorageError('set', e);
+            }
+        }
+
+        function loadApiKeyFromStorage() {
+            try {
+                return localStorage.getItem(API_KEY_STORAGE_KEY) || '';
+            } catch (e) {
+                showStorageError('get', e);
+                return '';
+            }
+        }
+
+        function syncApiKeysFromStorage() {
+            // Sync API key from localStorage (for changes from other windows)
+            const storedKey = loadApiKeyFromStorage();
+            const apiKeyInput = document.getElementById('apiKey');
+            const padApiKeyInput = document.getElementById('padApiKey');
+
+            // Only update if the stored value differs and the field is not focused
+            if (storedKey !== apiKeyInput.value && document.activeElement !== apiKeyInput) {
+                apiKeyInput.value = storedKey;
+            }
+            if (storedKey !== padApiKeyInput.value && document.activeElement !== padApiKeyInput) {
+                padApiKeyInput.value = storedKey;
+            }
+        }
+
+        // Save API key on every input (both fields share the same key)
+        document.getElementById('apiKey').addEventListener('input', (e) => {
+            saveApiKeyToStorage(e.target.value);
+            // Sync to pad API key field
+            document.getElementById('padApiKey').value = e.target.value;
+        });
+
+        document.getElementById('padApiKey').addEventListener('input', (e) => {
+            saveApiKeyToStorage(e.target.value);
+            // Sync to upload API key field
+            document.getElementById('apiKey').value = e.target.value;
+        });
+
+        // Load API key from storage on page load
+        const savedApiKey = loadApiKeyFromStorage();
+        if (savedApiKey) {
+            document.getElementById('apiKey').value = savedApiKey;
+            document.getElementById('padApiKey').value = savedApiKey;
+        }
+
         // Load files on page load
         loadFiles();
         // Start auto-refresh by default
@@ -980,6 +1061,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         // Load pad content and start polling
         loadPadContent();
         setInterval(loadPadContent, 2000);
+        // Sync API key from other windows periodically
+        setInterval(syncApiKeysFromStorage, 2000);
     </script>
 </body>
 </html>"""
