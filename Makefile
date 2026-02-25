@@ -39,7 +39,7 @@ test-browser:
 	@echo "🌐 Running browser E2E tests..."
 	@echo "📦 Installing Playwright browsers (first time only)..."
 	uvx --from playwright --with playwright playwright install chromium 2>/dev/null || true
-	uvx --from playwright --with playwright python tests/test_browser.py
+	uvx --from playwright --with playwright python tests/e2e_test_browser.py
 
 # Validate base64 format of embedded PDF.js libraries
 test-base64:
