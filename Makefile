@@ -23,12 +23,12 @@ test: test-dev
 # Run tests on dev version
 test-dev:
 	@echo "🧪 Running tests on DEV version..."
-	TEST_VERSION=dev python3 tests/test_companion.py
+	TEST_VERSION=dev python3 -m unittest discover -s tests -p "test_*.py"
 
 # Run tests on built version
 test-built:
 	@echo "🧪 Running tests on BUILT version..."
-	TEST_VERSION=built python3 tests/test_companion.py
+	TEST_VERSION=built python3 -m unittest discover -s tests -p "test_*.py"
 
 # Run tests on both versions
 test-all: test-dev test-built
