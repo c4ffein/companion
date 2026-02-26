@@ -72,7 +72,7 @@ _PDFJS_WORKER = "{pdf_worker_b64}";
 """
 
     # Insert after the imports section (after "from typing import ...")
-    typing_import = "from typing import Dict, Optional, Tuple\n"
+    typing_import = "from typing import Dict, List, Optional, Tuple\n"
     if typing_import not in source:
         print("❌ ERROR: Could not find typing import line in source.")
         print(f"   Expected: {typing_import.strip()}")

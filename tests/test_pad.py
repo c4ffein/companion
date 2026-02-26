@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
 """
-Unit tests for Companion
+Unit tests for pad API and CLI
 """
 
+import hashlib
+import io
 import json
+import secrets
 import sys
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 # Import the companion module
 sys.path.insert(0, "src")
 import companion
+
+
+def _make_client_entry(client_secret, admin=True, name="test"):
+    """Create a properly hashed client entry for CLIENTS."""
+    salt = secrets.token_hex(16)
+    secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
+    return {
+        "salt": salt,
+        "secret_hash": secret_hash,
+        "admin": admin,
+        "name": name,
+        "registered": "2026-01-01T00:00:00",
+    }
 
 
 class TestPadAPI(unittest.TestCase):
@@ -23,17 +40,24 @@ class TestPadAPI(unittest.TestCase):
     def setUpClass(cls):
         """Start server in background thread"""
         cls.port = 8888
-        cls.api_key = "test_key_123"
+        cls.client_id = "test-client-id"
+        cls.client_secret = "test-client-secret"
+        cls.auth_token = f"{cls.client_id}:{cls.client_secret}"
         cls.base_url = f"http://localhost:{cls.port}"
 
         # Reset global state
         companion.FILES.clear()
-        companion.PREVIEW_STATE = {"filename": None, "timestamp": 0}
+        companion.PREVIEW_STATE = {"file_id": None, "timestamp": 0}
         companion.PAD_STATE = {"content": "", "timestamp": 0}
+        companion.RATE_LIMIT_STORE.clear()
+
+        # Set up test client in CLIENTS with proper hashed secret
+        with companion.CLIENTS_LOCK:
+            companion.CLIENTS.clear()
+            companion.CLIENTS[cls.client_id] = _make_client_entry(cls.client_secret, admin=True, name="test-pad")
 
         # Start server in thread
         def run_server():
-            companion.API_KEY = cls.api_key
             server_address = ("127.0.0.1", cls.port)
             httpd = companion.http.server.HTTPServer(server_address, companion.FileShareHandler)
             httpd.allow_reuse_address = True
@@ -49,12 +73,21 @@ class TestPadAPI(unittest.TestCase):
         """Stop server"""
         if hasattr(cls, "httpd"):
             cls.httpd.shutdown()
+            cls.httpd.server_close()
 
     def setUp(self):
         """Reset pad state before each test"""
         with companion.PAD_LOCK:
             companion.PAD_STATE["content"] = ""
             companion.PAD_STATE["timestamp"] = 0
+        with companion.RATE_LIMIT_LOCK:
+            companion.RATE_LIMIT_STORE.clear()
+        self.request_log = []
+        patcher = patch.object(
+            companion.FileShareHandler, "log_message", lambda self_, fmt, *a: self.request_log.append(fmt % a)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_get_pad_empty(self):
         """Test getting empty pad content"""
@@ -65,10 +98,10 @@ class TestPadAPI(unittest.TestCase):
             self.assertEqual(result["timestamp"], 0)
 
     def test_post_pad_success(self):
-        """Test posting pad content with valid API key"""
+        """Test posting pad content with valid credentials"""
         data = json.dumps({"content": "Hello, World!"}).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
         req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
@@ -80,10 +113,10 @@ class TestPadAPI(unittest.TestCase):
             self.assertEqual(result["size"], 13)
 
     def test_post_pad_unauthorized(self):
-        """Test posting pad content with invalid API key"""
+        """Test posting pad content with invalid credentials"""
         data = json.dumps({"content": "Should fail"}).encode("utf-8")
         headers = {
-            "Authorization": "Bearer wrong_key",
+            "Authorization": "Bearer wrong_id:wrong_secret",
             "Content-Type": "application/json",
         }
         req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
@@ -97,7 +130,7 @@ class TestPadAPI(unittest.TestCase):
         content = "Test content for pad"
         data = json.dumps({"content": content}).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
 
@@ -117,7 +150,7 @@ class TestPadAPI(unittest.TestCase):
     def test_pad_timestamp_increments(self):
         """Test that pad timestamp increments on each update"""
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
 
@@ -138,7 +171,7 @@ class TestPadAPI(unittest.TestCase):
         large_content = "x" * (10 * 1024 * 1024 + 1)
         data = json.dumps({"content": large_content}).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
         req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
@@ -152,7 +185,7 @@ class TestPadAPI(unittest.TestCase):
         content = "Hello 世界! 🌍 émojis and spëcial çhars"
         data = json.dumps({"content": content}).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
 
@@ -173,7 +206,7 @@ class TestPadAPI(unittest.TestCase):
         # First post some content
         data = json.dumps({"content": "Some content"}).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
         req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
@@ -201,17 +234,24 @@ class TestPadCLI(unittest.TestCase):
     def setUpClass(cls):
         """Start server in background thread"""
         cls.port = 8889
-        cls.api_key = "test_key_456"
+        cls.client_id = "test-cli-id"
+        cls.client_secret = "test-cli-secret"
+        cls.auth_token = f"{cls.client_id}:{cls.client_secret}"
         cls.base_url = f"http://localhost:{cls.port}"
 
         # Reset global state
         companion.FILES.clear()
-        companion.PREVIEW_STATE = {"filename": None, "timestamp": 0}
+        companion.PREVIEW_STATE = {"file_id": None, "timestamp": 0}
         companion.PAD_STATE = {"content": "", "timestamp": 0}
+        companion.RATE_LIMIT_STORE.clear()
+
+        # Set up test client in CLIENTS with proper hashed secret
+        with companion.CLIENTS_LOCK:
+            companion.CLIENTS.clear()
+            companion.CLIENTS[cls.client_id] = _make_client_entry(cls.client_secret, admin=True, name="test-pad-cli")
 
         # Start server in thread
         def run_server():
-            companion.API_KEY = cls.api_key
             server_address = ("127.0.0.1", cls.port)
             httpd = companion.http.server.HTTPServer(server_address, companion.FileShareHandler)
             httpd.allow_reuse_address = True
@@ -227,20 +267,30 @@ class TestPadCLI(unittest.TestCase):
         """Stop server"""
         if hasattr(cls, "httpd"):
             cls.httpd.shutdown()
+            cls.httpd.server_close()
 
     def setUp(self):
         """Reset pad state before each test"""
         with companion.PAD_LOCK:
             companion.PAD_STATE["content"] = ""
             companion.PAD_STATE["timestamp"] = 0
+        with companion.RATE_LIMIT_LOCK:
+            companion.RATE_LIMIT_STORE.clear()
+        self.request_log = []
+        patcher = patch.object(
+            companion.FileShareHandler, "log_message", lambda self_, fmt, *a: self.request_log.append(fmt % a)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_get_pad_cli(self):
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_get_pad_cli(self, mock_stdout):
         """Test get-pad CLI command"""
         # First set some content via API
         content = "CLI test content"
         data = json.dumps({"content": content}).encode("utf-8")
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.auth_token}",
             "Content-Type": "application/json",
         }
         req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
@@ -250,10 +300,11 @@ class TestPadCLI(unittest.TestCase):
         result = companion.get_pad(self.base_url)
         self.assertTrue(result)
 
-    def test_set_pad_cli(self):
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_set_pad_cli(self, mock_stdout):
         """Test set-pad CLI command"""
         content = "Content from CLI"
-        result = companion.set_pad(self.base_url, content, self.api_key)
+        result = companion.set_pad(self.base_url, content, self.auth_token)
         self.assertTrue(result)
 
         # Verify via API

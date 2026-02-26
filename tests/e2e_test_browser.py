@@ -2,11 +2,18 @@
 """
 Browser E2E tests for companion.py
 Tests the actual browser behavior including JavaScript execution and console errors
+
+Requires playwright: run via 'make test-browser'
 """
 
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
+
 from playwright.sync_api import sync_playwright
 
 
@@ -49,22 +56,28 @@ def test_page_load_and_console(url, version_name):
 
         # Check if we can find the main elements
         try:
-            # Check for tab buttons
-            upload_button = page.locator('button:has-text("Upload")')
-            files_button = page.locator('button:has-text("Files")')
-            preview_button = page.locator('button:has-text("Preview")')
+            # Check for tab buttons (including Settings)
+            for label in ["Upload", "Files", "Preview", "Settings"]:
+                btn = page.locator(f'button:has-text("{label}")')
+                assert btn.is_visible(), f"{label} button not found"
+            print("✅ All tab buttons visible (including Settings)")
 
-            assert upload_button.is_visible(), "Upload button not found"
-            assert files_button.is_visible(), "Files button not found"
-            assert preview_button.is_visible(), "Preview button not found"
-            print("✅ All tab buttons visible")
+            # Verify old API key inputs are gone
+            assert page.locator("#apiKey").count() == 0, "#apiKey input should not exist"
+            assert page.locator("#padApiKey").count() == 0, "#padApiKey input should not exist"
+            print("✅ Old API key inputs removed")
 
             # Test tab switching
-            files_button.click()
+            page.locator('button:has-text("Files")').click()
             time.sleep(0.5)
-            files_tab = page.locator("#filesTab")
-            assert files_tab.is_visible(), "Files tab should be visible after click"
+            assert page.locator("#filesTab").is_visible(), "Files tab should be visible after click"
             print("✅ Tab switching works")
+
+            # Test Settings tab
+            page.locator('button:has-text("Settings")').click()
+            time.sleep(0.5)
+            assert page.locator("#settingsTab").is_visible(), "Settings tab should be visible after click"
+            print("✅ Settings tab works")
 
         except Exception as e:
             print(f"❌ Element test failed: {e}")
@@ -90,69 +103,47 @@ def test_page_load_and_console(url, version_name):
 
 def main():
     """Run browser tests against both dev and built versions"""
-    # Change to project root directory (parent of tests/)
-    import os
-    from pathlib import Path
-
     project_root = Path(__file__).parent.parent
     os.chdir(project_root)
 
     print("🧪 Starting browser E2E tests...")
 
-    # Start server for dev version
-    print("\n" + "=" * 60)
-    print("Testing DEV version (src/companion.py)")
-    print("=" * 60)
+    # Use temp HOME to avoid config issues
+    temp_home = tempfile.mkdtemp()
+    env = {**os.environ, "HOME": temp_home}
 
-    server_dev = subprocess.Popen(
-        [
-            "python3",
-            "src/companion.py",
-            "server",
-            "--api-key",
-            "test123",
-            "--port",
-            "8090",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    results = {}
+    versions = [("DEV", "src/companion.py", 8090), ("BUILT", "companion.py", 8091)]
 
-    time.sleep(2)  # Wait for server to start
+    for name, script, port in versions:
+        print(f"\n{'=' * 60}")
+        print(f"Testing {name} version ({script})")
+        print("=" * 60)
 
-    try:
-        dev_passed = test_page_load_and_console("http://localhost:8090", "DEV version")
-    finally:
-        server_dev.terminate()
-        server_dev.wait()
+        server = subprocess.Popen(
+            ["python3", script, "server", "--port", str(port)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        time.sleep(2)
 
-    # Start server for built version
-    print("\n" + "=" * 60)
-    print("Testing BUILT version (companion.py)")
-    print("=" * 60)
+        try:
+            results[name] = test_page_load_and_console(f"http://localhost:{port}", f"{name} version")
+        finally:
+            server.terminate()
+            server.wait()
 
-    server_built = subprocess.Popen(
-        ["python3", "companion.py", "server", "--api-key", "test123", "--port", "8091"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    time.sleep(2)  # Wait for server to start
-
-    try:
-        built_passed = test_page_load_and_console("http://localhost:8091", "BUILT version")
-    finally:
-        server_built.terminate()
-        server_built.wait()
+    shutil.rmtree(temp_home, ignore_errors=True)
 
     # Summary
-    print("\n" + "=" * 60)
+    print(f"\n{'=' * 60}")
     print("BROWSER TEST SUMMARY")
     print("=" * 60)
-    print(f"DEV version:   {'✅ PASS' if dev_passed else '❌ FAIL'}")
-    print(f"BUILT version: {'✅ PASS' if built_passed else '❌ FAIL'}")
+    for name, passed in results.items():
+        print(f"{name} version:  {'✅ PASS' if passed else '❌ FAIL'}")
 
-    if dev_passed and built_passed:
+    if all(results.values()):
         print("\n🎉 All browser tests passed!")
         sys.exit(0)
     else:
