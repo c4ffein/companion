@@ -336,7 +336,7 @@ class TestConnectInteractive(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_interactive_all_fields(self):  # TODO review
+    def test_interactive_all_fields(self):
         """--interactive with stdin providing all fields should succeed."""
         stdin_lines = "http://test.local:5000\nmy-cid\nmy-csecret\n"
         result = _run(["connect", "--interactive"], env=self.env, stdin_text=stdin_lines)
@@ -347,7 +347,7 @@ class TestConnectInteractive(unittest.TestCase):
         self.assertEqual(server["client-id"], "my-cid")
         self.assertEqual(server["client-secret"], "my-csecret")
 
-    def test_interactive_with_url_pre_provided(self):  # TODO review
+    def test_interactive_with_url_pre_provided(self):
         """--interactive --url <url> should only prompt for client-id and client-secret."""
         stdin_lines = "prompted-cid\nprompted-csecret\n"
         result = _run(
@@ -370,7 +370,7 @@ class TestRegisterNonInteractive(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_no_config_no_flags_exits_with_error(self):  # TODO review
+    def test_no_config_no_flags_exits_with_error(self):
         """register with no config and no flags should exit 1 and list missing flags."""
         result = _run(["register"], env=self.env)
         self.assertEqual(result.returncode, 1)
@@ -379,7 +379,7 @@ class TestRegisterNonInteractive(unittest.TestCase):
         self.assertIn("--client-secret", result.stderr)
         self.assertIn("--interactive", result.stderr)
 
-    def test_missing_server_url_only(self):  # TODO review
+    def test_missing_server_url_only(self):
         """register with --client-id and --client-secret but no --server-url should mention --server-url."""
         result = _run(
             ["register", "--client-id", "admin-id", "--client-secret", "admin-secret"],
@@ -388,7 +388,7 @@ class TestRegisterNonInteractive(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("--server-url", result.stderr)
 
-    def test_all_flags_passes_validation(self):  # TODO review
+    def test_all_flags_passes_validation(self):
         """register with all flags should pass validation (fail at network, not 'Missing')."""
         result = _run(
             [
@@ -415,14 +415,14 @@ class TestRegisterInteractive(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_interactive_all_fields(self):  # TODO review
+    def test_interactive_all_fields(self):
         """--interactive with stdin providing all fields should pass validation."""
         stdin_lines = "http://localhost:99999\nadmin-id\nadmin-secret\ntest-client\n"
         result = _run(["register", "--interactive"], env=self.env, stdin_text=stdin_lines)
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("Missing", result.stderr)
 
-    def test_interactive_with_server_url_pre_provided(self):  # TODO review
+    def test_interactive_with_server_url_pre_provided(self):
         """--interactive --server-url <url> should only prompt for remaining fields."""
         stdin_lines = "admin-id\nadmin-secret\ntest-client\n"
         result = _run(
