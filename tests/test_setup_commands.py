@@ -133,9 +133,22 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
         result = _run(["server-add-user"], env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         config = _read_config(self.tmp_home)
-        clients = config["servers"]["default"]["clients"]
+        server = config["servers"]["default"]
+        clients = server["clients"]
         # Should have 2 clients: the admin from setup + the new user
-        self.assertEqual(len(clients), 2)  # TODO actually check content
+        self.assertEqual(len(clients), 2)
+        # The admin client is keyed by server["client-id"]
+        admin_id = server["client-id"]
+        self.assertIn(admin_id, clients)
+        self.assertTrue(clients[admin_id]["admin"])
+        # The other client is the newly added user
+        user_ids = [cid for cid in clients if cid != admin_id]
+        self.assertEqual(len(user_ids), 1)
+        user = clients[user_ids[0]]
+        self.assertFalse(user["admin"])
+        self.assertIn("salt", user)
+        self.assertIn("secret_hash", user)
+        self.assertIn("registered", user)
 
     def test_explicit_credentials(self):
         """server-add-user with explicit flags stores those values."""
