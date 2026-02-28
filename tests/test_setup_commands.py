@@ -52,14 +52,14 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_missing_url_exits_with_error(self):  # TODO review
+    def test_missing_url_exits_with_error(self):
         """server-setup without --url should exit 1 and mention --url and --interactive."""
         result = _run(["server-setup"], env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("--url", result.stderr)
         self.assertIn("--interactive", result.stderr)
 
-    def test_url_only_auto_generates_credentials(self):  # TODO review
+    def test_url_only_auto_generates_credentials(self):
         """server-setup --url <url> should succeed and auto-generate client-id/secret."""
         result = _run(["server-setup", "--url", "http://example.com:8080"], env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -71,7 +71,7 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         self.assertIn(server["client-id"], server["clients"])
         self.assertEqual(config["default-server"], "default")
 
-    def test_all_flags_uses_exact_values(self):  # TODO review
+    def test_all_flags_uses_exact_values(self):
         """server-setup with all flags should store the exact provided values."""
         result = _run(
             [
@@ -99,7 +99,7 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         self.assertTrue(client["admin"])
         self.assertEqual(client["name"], "Admin Bob")
 
-    def test_default_server_name(self):  # TODO review
+    def test_default_server_name(self):
         """Without --server, the server name defaults to 'default'."""
         result = _run(["server-setup", "--url", "http://localhost:8080"], env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -121,13 +121,13 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_no_config_exits_with_error(self):  # TODO review
+    def test_no_config_exits_with_error(self):
         """server-add-user without any config should exit 1."""
         result = _run(["server-add-user"], env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("No config file found", result.stderr)
 
-    def test_after_setup_auto_generates(self):  # TODO review
+    def test_after_setup_auto_generates(self):
         """server-add-user after setup should succeed with auto-generated credentials."""
         self._setup_server()
         result = _run(["server-add-user"], env=self.env)
@@ -135,9 +135,9 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         clients = config["servers"]["default"]["clients"]
         # Should have 2 clients: the admin from setup + the new user
-        self.assertEqual(len(clients), 2)
+        self.assertEqual(len(clients), 2)  # TODO actually check content
 
-    def test_explicit_credentials(self):  # TODO review
+    def test_explicit_credentials(self):
         """server-add-user with explicit flags stores those values."""
         self._setup_server()
         result = _run(
@@ -158,7 +158,7 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
         self.assertFalse(client["admin"])
         self.assertEqual(client["name"], "Alice")
 
-    def test_admin_flag(self):  # TODO review
+    def test_admin_flag(self):
         """server-add-user --admin grants admin privileges."""
         self._setup_server()
         result = _run(
@@ -177,7 +177,7 @@ class TestServerSetupInteractive(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_prompts_for_all_fields(self):  # TODO review
+    def test_prompts_for_all_fields(self):
         """--interactive with stdin providing all fields should succeed."""
         stdin_lines = "myserver\nhttp://test.local:5000\ncustom-id\ncustom-secret\nMy Admin\n"
         result = _run(["server-setup", "--interactive"], env=self.env, stdin_text=stdin_lines)
@@ -190,7 +190,7 @@ class TestServerSetupInteractive(unittest.TestCase):
         client = server["clients"]["custom-id"]
         self.assertEqual(client["name"], "My Admin")
 
-    def test_blanks_auto_generate(self):  # TODO review
+    def test_blanks_auto_generate(self):
         """--interactive with blank inputs for auto-gen fields should auto-generate."""
         # server name blank -> "default", url provided, client-id blank, secret blank, name blank
         stdin_lines = "\nhttp://auto.local:8080\n\n\n\n"
@@ -203,7 +203,7 @@ class TestServerSetupInteractive(unittest.TestCase):
         self.assertEqual(len(server["client-id"]), 32)  # token_hex(16) = 32 chars
         self.assertEqual(len(server["client-secret"]), 64)  # token_hex(32) = 64 chars
 
-    def test_url_flag_skips_url_prompt(self):  # TODO review
+    def test_url_flag_skips_url_prompt(self):
         """--interactive --url <url> should not prompt for URL."""
         # Only prompts for: server name, client-id, client-secret, client-name
         stdin_lines = "srv1\nmy-cid\nmy-csecret\nBob\n"
@@ -233,7 +233,7 @@ class TestServerAddUserInteractive(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_interactive_provides_values(self):  # TODO review
+    def test_interactive_provides_values(self):
         """--interactive with stdin providing all values should succeed."""
         stdin_lines = "new-client-id\nnew-client-secret\nNew User\n"
         result = _run(
@@ -247,7 +247,7 @@ class TestServerAddUserInteractive(unittest.TestCase):
         self.assertFalse(client["admin"])
         self.assertEqual(client["name"], "New User")
 
-    def test_interactive_blanks_auto_generate(self):  # TODO review
+    def test_interactive_blanks_auto_generate(self):
         """--interactive with blank inputs should auto-generate client-id/secret."""
         stdin_lines = "\n\n\n"
         result = _run(
@@ -268,7 +268,7 @@ class TestConnectNonInteractive(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_missing_all_required_flags(self):  # TODO review
+    def test_missing_all_required_flags(self):
         """connect with no flags should exit 1 and list all missing flags + --interactive."""
         result = _run(["connect"], env=self.env)
         self.assertEqual(result.returncode, 1)
@@ -277,7 +277,7 @@ class TestConnectNonInteractive(unittest.TestCase):
         self.assertIn("--client-secret", result.stderr)
         self.assertIn("--interactive", result.stderr)
 
-    def test_missing_url_only(self):  # TODO review
+    def test_missing_url_only(self):
         """connect with --client-id and --client-secret but no --url should mention --url."""
         result = _run(
             ["connect", "--client-id", "cid", "--client-secret", "csec"],
@@ -286,7 +286,7 @@ class TestConnectNonInteractive(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("--url", result.stderr)
 
-    def test_all_flags_saves_config(self):  # TODO review
+    def test_all_flags_saves_config(self):
         """connect with all required flags should save credentials and set default-server."""
         result = _run(
             [
@@ -308,7 +308,7 @@ class TestConnectNonInteractive(unittest.TestCase):
         self.assertEqual(server["client-secret"], "my-secret")
         self.assertEqual(config["default-server"], "default")
 
-    def test_custom_server_name(self):  # TODO review
+    def test_custom_server_name(self):
         """connect --server myname should use that name."""
         result = _run(
             [
