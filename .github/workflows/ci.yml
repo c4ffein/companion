@@ -86,7 +86,7 @@ jobs:
     - name: Run tests on dev version
       env:
         TEST_VERSION: dev
-      run: python tests/test_companion.py
+      run: python -m unittest discover -s tests -p "test_*.py"
 
   test-built:
     name: Test Built Version - ${{ matrix.os }} (Python ${{ matrix.python-version }})
@@ -126,4 +126,4 @@ jobs:
     - name: Run tests on built version
       env:
         TEST_VERSION: built
-      run: python tests/test_companion.py
+      run: python -m unittest discover -s tests -p "test_*.py"
