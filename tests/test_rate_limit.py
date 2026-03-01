@@ -33,7 +33,7 @@ def _make_client_entry(client_secret, admin=True, name="test"):
 
 
 class TestRateLimit(unittest.TestCase):
-    """Test rate limiting by manipulating RATE_LIMIT_STORE directly"""
+    """Test per-client rate limiting by manipulating RATE_LIMIT_STORE directly"""
 
     @classmethod
     def setUpClass(cls):
@@ -80,12 +80,12 @@ class TestRateLimit(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_rate_limit_triggers_429(self):  # TODO make it session-based
+    def test_rate_limit_triggers_429(self):
         """Test that exceeding rate limit returns 429"""
-        # Pre-fill the rate limit store for 127.0.0.1 with max entries
+        # Pre-fill the rate limit store for the test client with max entries
         now = time.monotonic()
         with companion.RATE_LIMIT_LOCK:
-            companion.RATE_LIMIT_STORE["127.0.0.1"] = [now] * companion.RATE_LIMIT_MAX
+            companion.RATE_LIMIT_STORE[self.client_id] = [now] * companion.RATE_LIMIT_MAX
 
         # Next request should be rejected
         data = json.dumps({"content": "rate limited"}).encode("utf-8")
@@ -98,7 +98,7 @@ class TestRateLimit(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(cm.exception.code, 429)
 
-    def test_rate_limit_allows_under_max(self):  # TODO make it session-based
+    def test_rate_limit_allows_under_max(self):
         """Test that requests under the limit succeed"""
         data = json.dumps({"content": "ok"}).encode("utf-8")
         headers = {
@@ -114,7 +114,7 @@ class TestRateLimit(unittest.TestCase):
         """Pre-fill with RATE_LIMIT_MAX - 1 entries: next succeeds, one after returns 429."""
         now = time.monotonic()
         with companion.RATE_LIMIT_LOCK:
-            companion.RATE_LIMIT_STORE["127.0.0.1"] = [now] * (companion.RATE_LIMIT_MAX - 1)
+            companion.RATE_LIMIT_STORE[self.client_id] = [now] * (companion.RATE_LIMIT_MAX - 1)
 
         data = json.dumps({"content": "at the limit"}).encode("utf-8")
         headers = {
@@ -143,7 +143,7 @@ class TestRateLimit(unittest.TestCase):
         # Place all timestamps well before the window so they expire
         old = time.monotonic() - companion.RATE_LIMIT_WINDOW - 10
         with companion.RATE_LIMIT_LOCK:
-            companion.RATE_LIMIT_STORE["127.0.0.1"] = [old] * (companion.RATE_LIMIT_MAX * 2)
+            companion.RATE_LIMIT_STORE[self.client_id] = [old] * (companion.RATE_LIMIT_MAX * 2)
 
         data = json.dumps({"content": "after cleanup"}).encode("utf-8")
         headers = {

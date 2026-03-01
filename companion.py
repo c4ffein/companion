@@ -117,7 +117,7 @@ MAX_REQUEST_BODY = int(os.environ.get("COMPANION_MAX_REQUEST_BODY", str(MAX_STOR
 # to restrict to a specific origin anyway (e.g. "https://myhost.example").
 CORS_ALLOW_ORIGIN = os.environ.get("COMPANION_CORS_ORIGIN", "*")
 
-# Rate limiting (per-IP sliding window)
+# Rate limiting (per-client sliding window)
 RATE_LIMIT_STORE: Dict[str, List[float]] = {}
 RATE_LIMIT_LOCK = Lock()
 RATE_LIMIT_WINDOW = 60  # seconds
@@ -416,11 +416,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return None
         return client
 
-    def _check_rate_limit(self) -> bool:
-        # TODO - bad, we don't want to rate-limit IP (what about IPv6 ranges...)
-        # TODO check if we'd rather do session only rate-limit since we have no unauth route now? Check?
-        """Per-IP sliding window rate limit. Returns True if allowed, sends 429 if not."""
-        ip = self.client_address[0]
+    def _check_rate_limit(self, client_id: str) -> bool:
+        """Per-client sliding window rate limit. Returns True if allowed, sends 429 if not."""
         now = time.monotonic()
         with RATE_LIMIT_LOCK:
             # Cleanup when store gets large
@@ -429,7 +426,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 to_delete = [k for k, v in RATE_LIMIT_STORE.items() if not v or v[-1] < cutoff]
                 for k in to_delete:
                     del RATE_LIMIT_STORE[k]
-            timestamps = RATE_LIMIT_STORE.setdefault(ip, [])
+            timestamps = RATE_LIMIT_STORE.setdefault(client_id, [])
             # Remove expired entries
             cutoff = now - RATE_LIMIT_WINDOW
             timestamps[:] = [t for t in timestamps if t > cutoff]
@@ -514,11 +511,6 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests (file uploads)"""
-        # Rate limit write endpoints
-        if self.path in ("/api/clients/register", "/api/upload", "/api/preview/set", "/api/pad"):
-            if not self._check_rate_limit():
-                return
-
         if self.path == "/api/clients/register":
             self._handle_register_client()
         elif self.path == "/api/preview/set":
@@ -528,6 +520,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/upload":
             client = self._require_auth()
             if not client:
+                return
+            if not self._check_rate_limit(client["client_id"]):
                 return
 
             body = self._read_body()
@@ -1544,7 +1538,10 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_preview_set(self):
         """Handle setting the preview state"""
-        if not self._require_auth():
+        client = self._require_auth()
+        if not client:
+            return
+        if not self._check_rate_limit(client["client_id"]):
             return
 
         body = self._read_body()
@@ -1599,7 +1596,10 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_pad_update(self):
         """Handle updating the pad content"""
-        if not self._require_auth():
+        client = self._require_auth()
+        if not client:
+            return
+        if not self._check_rate_limit(client["client_id"]):
             return
 
         body = self._read_body(max_bytes=PAD_MAX_SIZE + 1024)
@@ -1641,7 +1641,10 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_register_client(self):
         """Handle client registration. Always requires admin auth."""
-        if not self._require_admin():
+        client = self._require_admin()
+        if not client:
+            return
+        if not self._check_rate_limit(client["client_id"]):
             return
 
         # Registration payloads are small JSON; cap at 4KB.
