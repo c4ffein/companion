@@ -1500,7 +1500,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             # Update preview state atomically
             with PREVIEW_LOCK:
                 PREVIEW_STATE["file_id"] = file_id
-                PREVIEW_STATE["timestamp"] += 1
+                PREVIEW_STATE["timestamp"] = _next_timestamp(PREVIEW_STATE["timestamp"])
+                timestamp = PREVIEW_STATE["timestamp"]
 
             self._set_headers(HTTPStatus.OK, "application/json")
             self.wfile.write(
@@ -1509,7 +1510,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                         "success": True,
                         "file_id": file_id,
                         "filename": filename,
-                        "timestamp": PREVIEW_STATE["timestamp"],
+                        "timestamp": timestamp,
                     }
                 ).encode()
             )
@@ -1552,7 +1553,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             # Update pad state atomically
             with PAD_LOCK:
                 PAD_STATE["content"] = content
-                PAD_STATE["timestamp"] += 1
+                PAD_STATE["timestamp"] = _next_timestamp(PAD_STATE["timestamp"])
                 timestamp = PAD_STATE["timestamp"]
 
             self._set_headers(HTTPStatus.OK, "application/json")
@@ -1885,6 +1886,12 @@ def list_files(server_url: str, auth_token: str):
     except Exception as e:
         print(f"❌ Failed to list files: {e}")
         return False
+
+
+def _next_timestamp(current: int) -> int:
+    """Return a monotonically increasing millisecond timestamp."""
+    now = int(time.time() * 1000)
+    return now if now > current else current + 1
 
 
 def format_file_size(size_bytes: int) -> str:

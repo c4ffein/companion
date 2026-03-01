@@ -646,14 +646,12 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, f"set-preview failed: {result.stderr}")
             self.assertIn("Preview set successfully", result.stdout)
             self.assertIn(filename, result.stdout)
-            self.assertIn("Timestamp: 1", result.stdout)
-
             # Verify preview state via API
             response = self._auth_open(f"{self.server_url}/api/preview/current")
             state = json.loads(response.read().decode())
 
             self.assertEqual(state["filename"], filename)
-            self.assertEqual(state["timestamp"], 1)
+            self.assertGreater(state["timestamp"], 0)
             self.assertIn("mimetype", state)
             self.assertTrue(state["mimetype"].startswith("text/"))
 
@@ -893,10 +891,10 @@ class FileShareE2ETest(unittest.TestCase):
         )
         urllib.request.urlopen(req)
 
-        # Check timestamp incremented by 1
+        # Check timestamp increased
         response1 = self._auth_open(f"{self.server_url}/api/preview/current")
         state1 = json.loads(response1.read().decode())
-        self.assertEqual(state1["timestamp"], initial_timestamp + 1)
+        self.assertGreater(state1["timestamp"], initial_timestamp)
         self.assertEqual(state1["filename"], filenames[0])
         self.assertEqual(state1["file_id"], file_ids[0])
 
@@ -913,10 +911,10 @@ class FileShareE2ETest(unittest.TestCase):
         )
         urllib.request.urlopen(req)
 
-        # Check timestamp incremented by 2 from initial
+        # Check timestamp increased again
         response2 = self._auth_open(f"{self.server_url}/api/preview/current")
         state2 = json.loads(response2.read().decode())
-        self.assertEqual(state2["timestamp"], initial_timestamp + 2)
+        self.assertGreater(state2["timestamp"], state1["timestamp"])
         self.assertEqual(state2["filename"], filenames[1])
         self.assertEqual(state2["file_id"], file_ids[1])
 
@@ -1020,12 +1018,12 @@ class FileShareE2ETest(unittest.TestCase):
             response = urllib.request.urlopen(req)
             result_json = json.loads(response.read().decode())
             timestamps.append(result_json["timestamp"])
-        # Verify timestamps increment monotonically
+        # Verify timestamps are strictly monotonically increasing
         for i in range(1, len(timestamps)):
-            self.assertEqual(
+            self.assertGreater(
                 timestamps[i],
-                timestamps[i - 1] + 1,
-                f"Timestamp should increment by 1: {timestamps}",
+                timestamps[i - 1],
+                f"Timestamps should be strictly increasing: {timestamps}",
             )
         # Verify final state
         state_response = self._auth_open(f"{self.server_url}/api/preview/current")
@@ -1033,6 +1031,76 @@ class FileShareE2ETest(unittest.TestCase):
         self.assertEqual(state["file_id"], file_ids[-1])
         self.assertEqual(state["filename"], filenames[-1])
         self.assertEqual(state["timestamp"], timestamps[-1])
+
+    def test_17b_preview_concurrent_timestamps_unique(self):
+        """Stress test: concurrent preview-set requests must return unique timestamps.
+
+        This is a regression guard, not a proof of correctness. The original
+        race (reading PREVIEW_STATE["timestamp"] outside the lock) is a
+        timing-dependent interleaving that this test may not reliably trigger.
+        The real fix is structural (capture inside the lock) and is verifiable
+        by code review.
+        """
+        # Upload a file to use for preview
+        test_content = b"Concurrent test"
+        test_filename = "concurrent_preview.txt"
+        boundary = "----TestBoundaryConcurrent"
+        body = (
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="{test_filename}"\r\n'
+                f"Content-Type: text/plain\r\n\r\n"
+            ).encode()
+            + test_content
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
+        req = urllib.request.Request(
+            f"{self.server_url}/api/upload",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.auth_token}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+        response = urllib.request.urlopen(req)
+        result = json.loads(response.read().decode())
+        file_id = result["id"]
+
+        # Fire 20 concurrent preview-set requests
+        n = 20
+        timestamps = [None] * n
+        errors = []
+
+        def set_preview(idx):
+            try:
+                preview_data = json.dumps({"file_id": file_id}).encode()
+                r = urllib.request.Request(
+                    f"{self.server_url}/api/preview/set",
+                    data=preview_data,
+                    headers={
+                        "Authorization": f"Bearer {self.auth_token}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                resp = urllib.request.urlopen(r)
+                body = json.loads(resp.read().decode())
+                timestamps[idx] = body["timestamp"]
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=set_preview, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Errors during concurrent requests: {errors}")
+        self.assertTrue(all(ts is not None for ts in timestamps), f"Some requests didn't complete: {timestamps}")
+        # All timestamps must be unique (race would cause duplicates)
+        self.assertEqual(len(set(timestamps)), n, f"Timestamps should all be unique: {timestamps}")
+        # All timestamps must be positive
+        self.assertTrue(all(ts > 0 for ts in timestamps), f"All timestamps should be > 0: {timestamps}")
 
     def test_18_deps_pdfjs_lib_serves_exact_file(self):
         """Test that /deps/pdf.min.mjs serves the exact cached PDF.js library (built version only)"""

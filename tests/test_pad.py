@@ -110,7 +110,7 @@ class TestPadAPI(unittest.TestCase):
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertTrue(result["success"])
-            self.assertEqual(result["timestamp"], 1)
+            self.assertGreater(result["timestamp"], 0)
             self.assertEqual(result["size"], 13)
 
     def test_post_pad_unauthorized(self):
@@ -164,8 +164,13 @@ class TestPadAPI(unittest.TestCase):
                 result = json.loads(response.read().decode())
                 timestamps.append(result["timestamp"])
 
-        # Verify timestamps increment
-        self.assertEqual(timestamps, [1, 2, 3])
+        # Verify timestamps are strictly monotonically increasing
+        for i in range(1, len(timestamps)):
+            self.assertGreater(
+                timestamps[i],
+                timestamps[i - 1],
+                f"Timestamps should be strictly increasing: {timestamps}",
+            )
 
     def test_pad_size_limit(self):
         """Test that pad rejects content over size limit"""
