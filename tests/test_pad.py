@@ -182,6 +182,38 @@ class TestPadAPI(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(cm.exception.code, 413)  # Request Entity Too Large
 
+    def test_pad_size_exactly_at_limit(self):
+        """Test that pad accepts content exactly at the 10MB limit"""
+        content = "x" * (10 * 1024 * 1024)
+        data = json.dumps({"content": content}).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json",
+        }
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            self.assertTrue(result["success"])
+            self.assertEqual(result["size"], 10 * 1024 * 1024)
+
+    def test_pad_body_rejected_before_full_read(self):
+        """Test that an oversized request body is rejected at the HTTP level (413)
+        via Content-Length check, not just after parsing the JSON content."""
+        import http.client
+
+        # Claim a Content-Length larger than PAD_MAX_SIZE + 1KB overhead —
+        # _read_body should reject based on Content-Length before reading
+        oversized_length = 10 * 1024 * 1024 + 2048
+        conn = http.client.HTTPConnection("localhost", self.port)
+        conn.putrequest("POST", "/api/pad")
+        conn.putheader("Authorization", f"Bearer {self.auth_token}")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(oversized_length))
+        conn.endheaders(b"")  # send headers only, no body
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 413)
+        conn.close()
+
     def test_pad_unicode_content(self):
         """Test pad with unicode characters"""
         content = "Hello 世界! 🌍 émojis and spëcial çhars"
