@@ -5,6 +5,8 @@ Each test patches CONFIG_PATH / _CONFIG_LOCK_PATH to a temp dir so it
 never touches real config.
 """
 
+import fcntl
+import glob
 import json
 import os
 import subprocess
@@ -91,6 +93,22 @@ class TestConfigLockedContextManager(unittest.TestCase):
         self.mod = _import_companion()
         _patch_paths(self.mod, self.tmp_dir)
 
+    def _assert_no_dangling(self):
+        """Assert no .tmp files remain and the lock file is released."""
+        config_dir = str(self.mod.CONFIG_PATH.parent)
+        dangling = glob.glob(os.path.join(config_dir, "*.tmp"))
+        self.assertEqual(dangling, [], f"Dangling .tmp files found: {dangling}")
+        lock_path = str(self.mod._CONFIG_LOCK_PATH)
+        if os.path.exists(lock_path):
+            fd = os.open(lock_path, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except BlockingIOError:
+                self.fail("Lock file is still held after _config_locked() exited")
+            finally:
+                os.close(fd)
+
     def test_config_locked_reads_and_writes(self):
         """Write initial config, mutate via _config_locked, verify file updated."""
         config_path = self.mod.CONFIG_PATH
@@ -103,7 +121,7 @@ class TestConfigLockedContextManager(unittest.TestCase):
             cfg["added"] = True
         with open(config_path) as f:
             result = json.load(f)
-        # TODO check there are no dangling lock / temp ?
+        self._assert_no_dangling()
         self.assertEqual(result["key"], "new")
         self.assertTrue(result["added"])
 
@@ -119,7 +137,7 @@ class TestConfigLockedContextManager(unittest.TestCase):
                 raise ValueError("boom")
         with open(config_path) as f:
             result = json.load(f)
-        # TODO check there are no dangling lock / temp ?
+        self._assert_no_dangling()
         self.assertEqual(result["key"], "original")
 
     def test_config_locked_no_write_on_sys_exit(self):
@@ -134,14 +152,16 @@ class TestConfigLockedContextManager(unittest.TestCase):
                 raise SystemExit(1)
         with open(config_path) as f:
             result = json.load(f)
-        # TODO check there are no dangling lock / temp ?
+        self._assert_no_dangling()
         self.assertEqual(result["key"], "original")
 
     def test_config_locked_serializes_concurrent_writes(self):
-        """Two threads both use _config_locked; verify no data loss."""
-        # TODO are these threads enough to risk a race condition? Should we bump this number?
-        # TODO make an additional test where the same value is read and updated in a lock, with a lot of threads?
-        # TODO ensure this would trigger a race condition without a lock?
+        """16 threads each add a unique key; verify no data loss.
+
+        Without locking threads would read stale config and overwrite
+        each other's keys, so a high thread count makes that likely.
+        Verified: fails (4/16 keys) with _lock_file disabled.
+        """
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
@@ -153,16 +173,46 @@ class TestConfigLockedContextManager(unittest.TestCase):
                 counters = cfg.setdefault("counters", {})
                 counters[name] = True
 
-        threads = [threading.Thread(target=worker, args=(f"t{i}",)) for i in range(4)]
+        n_threads = 16
+        threads = [threading.Thread(target=worker, args=(f"t{i}",)) for i in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=10)
+            t.join(timeout=30)
         with open(config_path) as f:
             result = json.load(f)
-        self.assertEqual(len(result["counters"]), 4)
-        for i in range(4):
+        self.assertEqual(len(result["counters"]), n_threads)
+        for i in range(n_threads):
             self.assertIn(f"t{i}", result["counters"])
+
+    def test_config_locked_read_modify_write_concurrent(self):
+        """16 threads each read a counter, increment, write back; final value must be 16.
+
+        This is a classic read-modify-write race: without locking multiple
+        threads would read the same value and the final count would be less
+        than 16.
+        Verified: fails (4/16 increments) with _lock_file disabled.
+        """
+        config_path = self.mod.CONFIG_PATH
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump({"counter": 0}, f)
+        mod = self.mod
+
+        def increment():
+            with mod._config_locked() as cfg:
+                cfg["counter"] = cfg.get("counter", 0) + 1
+
+        n_threads = 16
+        threads = [threading.Thread(target=increment) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        with open(config_path) as f:
+            result = json.load(f)
+        self._assert_no_dangling()
+        self.assertEqual(result["counter"], n_threads)
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +244,19 @@ class TestSaveClientsMissingServer(unittest.TestCase):
         # but the server entry should NOT have been created
         with open(config_path) as f:
             result = json.load(f)
-        # TODO check there are no dangling lock / temp ?
+        config_dir = str(config_path.parent)
+        dangling = glob.glob(os.path.join(config_dir, "*.tmp"))
+        self.assertEqual(dangling, [], f"Dangling .tmp files found: {dangling}")
+        lock_path = str(self.mod._CONFIG_LOCK_PATH)
+        if os.path.exists(lock_path):
+            fd = os.open(lock_path, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except BlockingIOError:
+                self.fail("Lock file is still held after _save_clients_to_config()")
+            finally:
+                os.close(fd)
         self.assertNotIn("nonexistent", result["servers"])
 
 
@@ -220,7 +282,9 @@ class TestAddUserFailsIfServerMissing(unittest.TestCase):
         self.assertIn("not found", result.stderr)
         self.assertNotIn("KeyError", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
-        # TODO check there are no dangling lock / temp ?
+        config_dir = Path(self.tmp_home) / ".config" / "companion"
+        dangling = glob.glob(str(config_dir / "*.tmp"))
+        self.assertEqual(dangling, [], f"Dangling .tmp files found: {dangling}")
 
 
 class TestConnectFailsIfServerExists(unittest.TestCase):
@@ -245,7 +309,9 @@ class TestConnectFailsIfServerExists(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("already exists", result.stderr)
-        # TODO check there are no dangling lock / temp ?
+        config_dir = Path(self.tmp_home) / ".config" / "companion"
+        dangling = glob.glob(str(config_dir / "*.tmp"))
+        self.assertEqual(dangling, [], f"Dangling .tmp files found: {dangling}")
 
 
 if __name__ == "__main__":
