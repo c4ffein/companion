@@ -2406,6 +2406,9 @@ def connect_cmd(args):
 
 
 def register_cmd(args):  # TODO this command is supposed to register another user => just print the credentials...
+    # TODO this command should actually only be there to register a new user on a server we're already connected with
+    # TODO this command should require admin rights
+    # TODO implement the tests
     """Registers a new client using admin credentials (from config or CLI flags).
 
     If the server already exists in config, prints credentials without saving
