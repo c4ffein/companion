@@ -497,12 +497,41 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Not found")
 
     def _handle_multipart_upload(self, body: bytes, content_type: str, client_id: str = ""):
-        """Parse multipart form data and store file"""
+        """Parse multipart form data and store file.
+
+        Simplified multipart parser — intentionally not a full RFC 2046 implementation.
+        This is sufficient because the only real clients are:
+        - The web UI (browser FormData — always well-formed)
+        - The CLI upload_file() function (generates correct multipart)
+        - curl / standard HTTP tools (also well-formed)
+
+        Known simplifications:
+        - Boundary is extracted by splitting Content-Type on ";", then on
+          "boundary=". Quoted boundaries (required by RFC 2045 when the
+          value contains tspecials like : , / ( ) = ?) are handled by
+          stripping quotes. ";" is in tspecials but not in RFC 2046's
+          bchars, so a valid boundary never contains ";" and the split
+          is safe. In practice browsers/curl only generate alphanumeric +
+          dash boundaries that don't need quoting at all.
+        - body.split(boundary) assumes the boundary doesn't appear in file
+          content. This is always true in practice: the sender picks a boundary
+          specifically to avoid collisions.
+        - Filename is extracted by splitting on "filename=", not by parsing
+          Content-Disposition per RFC 6266. Works for all browser/curl output.
+        """
         # Extract boundary
         boundary = None
         for part in content_type.split(";"):
             if "boundary=" in part:
-                boundary = part.split("boundary=")[1].strip()
+                raw = part.split("boundary=")[1].strip()
+                if '"' in raw:
+                    if not raw.startswith('"') or not raw.endswith('"') or len(raw) < 2 or '"' in raw[1:-1]:
+                        self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
+                        self.wfile.write(json.dumps({"error": "Malformed boundary in Content-Type"}).encode())
+                        return
+                    boundary = raw[1:-1]
+                else:
+                    boundary = raw
                 break
 
         if not boundary:
