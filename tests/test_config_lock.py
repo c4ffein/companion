@@ -210,7 +210,7 @@ class TestAddUserFailsIfServerMissing(unittest.TestCase):
         self.env = _make_env(self.tmp_home)
 
     def test_add_user_fails_if_server_missing(self):  # TODO review
-        """server-add-user with nonexistent --name should print error, not KeyError."""
+        """server-add-user with nonexistent --server should print error, not KeyError."""
         # Create config with one server
         _write_config(
             self.tmp_home,
@@ -219,7 +219,7 @@ class TestAddUserFailsIfServerMissing(unittest.TestCase):
                 "servers": {"myserver": {"url": "http://localhost:8080"}},
             },
         )
-        result = _run(["server-add-user", "--name", "nosuchserver"], env=self.env)
+        result = _run(["server-add-user", "--server", "nosuchserver"], env=self.env)
         self.assertEqual(result.returncode, 1)
         self.assertIn("not found", result.stderr)
         self.assertNotIn("KeyError", result.stderr)
