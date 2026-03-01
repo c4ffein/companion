@@ -2028,15 +2028,21 @@ def set_pad(server_url: str, content: str, auth_token: str):
         return False
 
 
-def register_client(server_url: str, name: str, auth_token: Optional[str] = None):
+def register_client(
+    server_url: str,
+    name: str,
+    auth_token: Optional[str] = None,
+    new_client_id: Optional[str] = None,
+    new_client_secret: Optional[str] = None,
+):
     """Register a new client with the server, save credentials to config."""
     if not auth_token:
         print("❌ Admin credentials required to register new clients.", file=sys.stderr)
         print("   Provide --client-id and --client-secret of an admin account.", file=sys.stderr)
         return None, None
 
-    client_id = secrets.token_hex(16)
-    client_secret = secrets.token_hex(32)
+    client_id = new_client_id or secrets.token_hex(16)
+    client_secret = new_client_secret or secrets.token_hex(32)
 
     url = f"{server_url.rstrip('/')}/api/clients/register"
     headers = {
@@ -2417,7 +2423,11 @@ def register_cmd(args):  # TODO this command is supposed to register another use
         sys.exit(1)
 
     auth_token = f"{client_id}:{client_secret}"
-    new_client_id, new_client_secret = register_client(server_url, name, auth_token)
+    new_client_id = getattr(args, "new_client_id", None)
+    new_client_secret = getattr(args, "new_client_secret", None)
+    new_client_id, new_client_secret = register_client(
+        server_url, name, auth_token, new_client_id=new_client_id, new_client_secret=new_client_secret
+    )
     if new_client_id:  # TODO clean
         with _config_locked() as config:
             servers = config.get("servers", {})
@@ -2556,6 +2566,10 @@ def main():
     # Register mode
     register_parser = subparsers.add_parser("register", help="Register a new client with the server")
     register_parser.add_argument("--name", default="", help="Friendly name for this client")
+    register_parser.add_argument("--new-client-id", help="Client ID for the new client (auto-generated if blank)")
+    register_parser.add_argument(
+        "--new-client-secret", help="Client secret for the new client (auto-generated if blank)"
+    )
     register_parser.add_argument("--interactive", action="store_true", help="Prompt for missing fields")
     add_server_args(register_parser, needs_auth=True)
     # Clients mode
