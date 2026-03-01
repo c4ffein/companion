@@ -419,6 +419,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         return client
 
     def _check_rate_limit(self) -> bool:
+        # TODO - bad, we don't want to rate-limit IP (what about IPv6 ranges...)
+        # TODO check if we'd rather do session only rate-limit since we have no unauth route now? Check?
         """Per-IP sliding window rate limit. Returns True if allowed, sends 429 if not."""
         ip = self.client_address[0]
         now = time.monotonic()

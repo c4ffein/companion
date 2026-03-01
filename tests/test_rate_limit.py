@@ -80,7 +80,7 @@ class TestRateLimit(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_rate_limit_triggers_429(self):  # TODO review
+    def test_rate_limit_triggers_429(self):  # TODO make it session-based
         """Test that exceeding rate limit returns 429"""
         # Pre-fill the rate limit store for 127.0.0.1 with max entries
         now = time.monotonic()
@@ -98,7 +98,7 @@ class TestRateLimit(unittest.TestCase):
             urllib.request.urlopen(req)
         self.assertEqual(cm.exception.code, 429)
 
-    def test_rate_limit_allows_under_max(self):  # TODO review
+    def test_rate_limit_allows_under_max(self):  # TODO make it session-based
         """Test that requests under the limit succeed"""
         data = json.dumps({"content": "ok"}).encode("utf-8")
         headers = {
@@ -109,6 +109,10 @@ class TestRateLimit(unittest.TestCase):
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertTrue(result["success"])
+
+    # TODO add a test with a number of entries just under the limit
+
+    # TODO add a test with a number of entries over the limit, but in the valid timeframe < limit  =>  check we clean
 
 
 if __name__ == "__main__":
