@@ -69,7 +69,7 @@ class FileEntry:
 
 # In-memory file storage: {file_id (UUID): FileEntry}
 FILES: Dict[str, FileEntry] = {}
-FILES_LOCK = Lock()
+WORKSPACE_LOCK = Lock()
 
 # Per-client token auth: {client_id: {salt, secret_hash, admin, name, registered}}
 CLIENTS: Dict[str, dict] = {}
@@ -78,11 +78,9 @@ _ACTIVE_SERVER_NAME: Optional[str] = None
 
 # Preview state: current preview for all clients
 PREVIEW_STATE = {"file_id": None, "timestamp": 0}
-PREVIEW_LOCK = Lock()
 
 # Pad state: shared text pad content
 PAD_STATE = {"content": "", "timestamp": 0}
-PAD_LOCK = Lock()
 PAD_MAX_SIZE = 10 * 1024 * 1024  # 10MB character limit
 
 # Per-client storage limit
@@ -543,18 +541,16 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                     if not mimetype:
                         mimetype = "application/octet-stream"
 
-                    # Check per-client storage limit
-                    with FILES_LOCK:
-                        current_usage = sum(len(f.content) for f in FILES.values() if f.client_id == client_id)
-                    if current_usage + len(content) > MAX_STORAGE_PER_CLIENT:
-                        self._set_headers(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json")
-                        self.wfile.write(json.dumps({"error": "Storage limit exceeded for this client"}).encode())
-                        return
-
                     upload_time = datetime.now().isoformat()
                     file_id = str(uuid.uuid4())
 
-                    with FILES_LOCK:
+                    # Check per-client storage limit and insert atomically
+                    with WORKSPACE_LOCK:
+                        current_usage = sum(len(f.content) for f in FILES.values() if f.client_id == client_id)
+                        if current_usage + len(content) > MAX_STORAGE_PER_CLIENT:
+                            self._set_headers(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json")
+                            self.wfile.write(json.dumps({"error": "Storage limit exceeded for this client"}).encode())
+                            return
                         FILES[file_id] = FileEntry(filename, content, mimetype, upload_time, client_id)
 
                     self._set_headers(HTTPStatus.OK, "application/json")
@@ -1406,7 +1402,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Serve JSON list of available files"""
         if not self._require_auth():
             return
-        with FILES_LOCK:
+        with WORKSPACE_LOCK:
             files = [
                 {
                     "id": file_id,
@@ -1427,7 +1423,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Serve a file for download or inline preview"""
         if not self._require_auth():
             return
-        with FILES_LOCK:
+        with WORKSPACE_LOCK:
             if file_id not in FILES:
                 self._set_headers(HTTPStatus.NOT_FOUND)
                 self.wfile.write(b"File not found")
@@ -1452,12 +1448,11 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Serve current preview state"""
         if not self._require_auth():
             return
-        with PREVIEW_LOCK:
+        with WORKSPACE_LOCK:
             state = PREVIEW_STATE.copy()
 
-        # If there's a file_id, get its filename and mimetype
-        if state["file_id"]:
-            with FILES_LOCK:
+            # If there's a file_id, get its filename and mimetype
+            if state["file_id"]:
                 if state["file_id"] in FILES:
                     entry = FILES[state["file_id"]]
                     state["filename"] = entry.filename
@@ -1489,16 +1484,13 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "file_id is required"}).encode())
                 return
 
-            # Check if file exists
-            with FILES_LOCK:
+            # Check file exists and update preview state atomically
+            with WORKSPACE_LOCK:
                 if file_id not in FILES:
                     self._set_headers(HTTPStatus.NOT_FOUND, "application/json")
                     self.wfile.write(json.dumps({"error": "File not found"}).encode())
                     return
                 filename = FILES[file_id].filename
-
-            # Update preview state atomically
-            with PREVIEW_LOCK:
                 PREVIEW_STATE["file_id"] = file_id
                 PREVIEW_STATE["timestamp"] = _next_timestamp(PREVIEW_STATE["timestamp"])
                 timestamp = PREVIEW_STATE["timestamp"]
@@ -1523,7 +1515,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Serve current pad content"""
         if not self._require_auth():
             return
-        with PAD_LOCK:
+        with WORKSPACE_LOCK:
             state = PAD_STATE.copy()
 
         self._set_headers(content_type="application/json")
@@ -1551,7 +1543,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             # Update pad state atomically
-            with PAD_LOCK:
+            with WORKSPACE_LOCK:
                 PAD_STATE["content"] = content
                 PAD_STATE["timestamp"] = _next_timestamp(PAD_STATE["timestamp"])
                 timestamp = PAD_STATE["timestamp"]

@@ -77,7 +77,7 @@ class TestPadAPI(unittest.TestCase):
 
     def setUp(self):
         """Reset pad state before each test"""
-        with companion.PAD_LOCK:
+        with companion.WORKSPACE_LOCK:
             companion.PAD_STATE["content"] = ""
             companion.PAD_STATE["timestamp"] = 0
         with companion.RATE_LIMIT_LOCK:
@@ -312,7 +312,7 @@ class TestPadCLI(unittest.TestCase):
 
     def setUp(self):
         """Reset pad state before each test"""
-        with companion.PAD_LOCK:
+        with companion.WORKSPACE_LOCK:
             companion.PAD_STATE["content"] = ""
             companion.PAD_STATE["timestamp"] = 0
         with companion.RATE_LIMIT_LOCK:
