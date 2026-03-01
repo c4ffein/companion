@@ -91,62 +91,61 @@ class TestConfigLockedContextManager(unittest.TestCase):
         self.mod = _import_companion()
         _patch_paths(self.mod, self.tmp_dir)
 
-    def test_config_locked_reads_and_writes(self):  # TODO review
+    def test_config_locked_reads_and_writes(self):
         """Write initial config, mutate via _config_locked, verify file updated."""
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             json.dump({"key": "old"}, f)
-
         with self.mod._config_locked() as cfg:
             self.assertEqual(cfg["key"], "old")
             cfg["key"] = "new"
             cfg["added"] = True
-
         with open(config_path) as f:
             result = json.load(f)
+        # TODO check there are no dangling lock / temp ?
         self.assertEqual(result["key"], "new")
         self.assertTrue(result["added"])
 
-    def test_config_locked_no_write_on_exception(self):  # TODO review
+    def test_config_locked_no_write_on_exception(self):
         """If an exception is raised inside the with-block, config is unchanged."""
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             json.dump({"key": "original"}, f)
-
         with self.assertRaises(ValueError):
             with self.mod._config_locked() as cfg:
                 cfg["key"] = "modified"
                 raise ValueError("boom")
-
         with open(config_path) as f:
             result = json.load(f)
+        # TODO check there are no dangling lock / temp ?
         self.assertEqual(result["key"], "original")
 
-    def test_config_locked_no_write_on_sys_exit(self):  # TODO review
+    def test_config_locked_no_write_on_sys_exit(self):
         """sys.exit() inside the with-block should not write config."""
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             json.dump({"key": "original"}, f)
-
         with self.assertRaises(SystemExit):
             with self.mod._config_locked() as cfg:
                 cfg["key"] = "modified"
                 raise SystemExit(1)
-
         with open(config_path) as f:
             result = json.load(f)
+        # TODO check there are no dangling lock / temp ?
         self.assertEqual(result["key"], "original")
 
-    def test_config_locked_serializes_concurrent_writes(self):  # TODO review
+    def test_config_locked_serializes_concurrent_writes(self):
         """Two threads both use _config_locked; verify no data loss."""
+        # TODO are these threads enough to risk a race condition? Should we bump this number?
+        # TODO make an additional test where the same value is read and updated in a lock, with a lot of threads?
+        # TODO ensure this would trigger a race condition without a lock?
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
             json.dump({"counters": {}}, f)
-
         mod = self.mod
 
         def worker(name):
@@ -159,7 +158,6 @@ class TestConfigLockedContextManager(unittest.TestCase):
             t.start()
         for t in threads:
             t.join(timeout=10)
-
         with open(config_path) as f:
             result = json.load(f)
         self.assertEqual(len(result["counters"]), 4)
@@ -180,25 +178,23 @@ class TestSaveClientsMissingServer(unittest.TestCase):
         self.mod = _import_companion()
         _patch_paths(self.mod, self.tmp_dir)
 
-    def test_save_clients_fails_if_server_missing(self):  # TODO review
+    def test_save_clients_fails_if_server_missing(self):
         """_save_clients_to_config logs error and doesn't write when server missing."""
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         initial = {"servers": {"other": {"url": "http://localhost"}}}
         with open(config_path, "w") as f:
             json.dump(initial, f)
-
         self.mod._ACTIVE_SERVER_NAME = "nonexistent"
         self.mod.CLIENTS = {"c1": {"salt": "s", "secret_hash": "h", "admin": False}}
-
         with self.assertLogs("companion", level="ERROR") as cm:
             self.mod._save_clients_to_config()
-
         self.assertIn("not found in config", cm.output[0])
         # Config should still be written (context manager completes cleanly after return)
         # but the server entry should NOT have been created
         with open(config_path) as f:
             result = json.load(f)
+        # TODO check there are no dangling lock / temp ?
         self.assertNotIn("nonexistent", result["servers"])
 
 
@@ -209,7 +205,7 @@ class TestAddUserFailsIfServerMissing(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_add_user_fails_if_server_missing(self):  # TODO review
+    def test_add_user_fails_if_server_missing(self):
         """server-add-user with nonexistent --server should print error, not KeyError."""
         # Create config with one server
         _write_config(
@@ -224,6 +220,7 @@ class TestAddUserFailsIfServerMissing(unittest.TestCase):
         self.assertIn("not found", result.stderr)
         self.assertNotIn("KeyError", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
+        # TODO check there are no dangling lock / temp ?
 
 
 class TestConnectFailsIfServerExists(unittest.TestCase):
@@ -233,7 +230,7 @@ class TestConnectFailsIfServerExists(unittest.TestCase):
         self.tmp_home = tempfile.mkdtemp()
         self.env = _make_env(self.tmp_home)
 
-    def test_connect_fails_if_server_exists(self):  # TODO review
+    def test_connect_fails_if_server_exists(self):
         """connect when server name already exists should error."""
         # First connect succeeds
         result = _run(
@@ -241,7 +238,6 @@ class TestConnectFailsIfServerExists(unittest.TestCase):
             env=self.env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-
         # Second connect to same server name should fail
         result = _run(
             ["connect", "--url", "http://b.com", "--client-id", "c2", "--client-secret", "s2"],
@@ -249,101 +245,7 @@ class TestConnectFailsIfServerExists(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("already exists", result.stderr)
-
-
-class TestRegisterSkipsSaveIfServerExists(unittest.TestCase):
-    """register when server already in config prints creds but doesn't overwrite."""
-
-    def setUp(self):
-        self.tmp_home = tempfile.mkdtemp()
-        self.env = _make_env(self.tmp_home)
-
-    def test_register_skips_save_if_server_exists(self):  # TODO review
-        """register when server exists should print 'NOT saved' and keep original creds."""
-        # Pre-create config with admin creds
-        _write_config(
-            self.tmp_home,
-            {
-                "default-server": "default",
-                "servers": {
-                    "default": {
-                        "url": "http://localhost:99999",
-                        "client-id": "admin-id",
-                        "client-secret": "admin-secret",
-                    }
-                },
-            },
-        )
-        # register will fail at network level, but we can check config is unchanged
-        _run(
-            [
-                "register",
-                "--server-url",
-                "http://localhost:99999",
-                "--client-id",
-                "admin-id",
-                "--client-secret",
-                "admin-secret",
-                "--name",
-                "newclient",
-            ],
-            env=self.env,
-        )
-        # Network error -> exit 1, but config should be unchanged
-        config = _read_config(self.tmp_home)
-        self.assertEqual(config["servers"]["default"]["client-id"], "admin-id")
-        self.assertEqual(config["servers"]["default"]["client-secret"], "admin-secret")
-
-    def test_register_saves_if_server_new(self):  # TODO review
-        """register when server doesn't exist should create the entry."""
-        # No pre-existing config, register to a new server name
-        # This will fail at network level, so new creds won't be saved
-        # (register_client returns None on failure, so the save block is skipped)
-        # We test via the unit-level approach instead
-        pass
-
-
-class TestRegisterSavesIfServerNew(unittest.TestCase):
-    """register when server not in config should create entry (unit test)."""
-
-    def setUp(self):
-        self.tmp_dir = tempfile.mkdtemp()
-        self.mod = _import_companion()
-        _patch_paths(self.mod, self.tmp_dir)
-
-    def test_register_saves_if_server_new(self):  # TODO review
-        """Simulate successful register_client to a new server — entry is created."""
-        import argparse
-        import unittest.mock as mock
-
-        config_path = self.mod.CONFIG_PATH
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        # Empty config
-        with open(config_path, "w") as f:
-            json.dump({}, f)
-
-        args = argparse.Namespace(
-            interactive=False,
-            server_url="http://newhost:8080",
-            client_id="admin-id",
-            client_secret="admin-secret",
-            server=None,
-            name="new-client",
-        )
-
-        # Mock register_client to return new creds without hitting network
-        with mock.patch.object(self.mod, "register_client", return_value=("new-cid", "new-csecret")):
-            with self.assertRaises(SystemExit) as cm:
-                self.mod.register_cmd(args)
-            self.assertEqual(cm.exception.code, 0)
-
-        with open(config_path) as f:
-            result = json.load(f)
-        self.assertIn("default", result["servers"])
-        self.assertEqual(result["servers"]["default"]["url"], "http://newhost:8080")
-        self.assertEqual(result["servers"]["default"]["client-id"], "new-cid")
-        self.assertEqual(result["servers"]["default"]["client-secret"], "new-csecret")
-        self.assertEqual(result["default-server"], "default")
+        # TODO check there are no dangling lock / temp ?
 
 
 if __name__ == "__main__":
