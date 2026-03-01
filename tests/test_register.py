@@ -31,10 +31,11 @@ def _companion_script():
     return "src/companion.py"
 
 
-def _run(args, *, env, timeout=10):
+def _run(args, *, env, stdin_text=None, timeout=10):
     """Run the companion CLI, return CompletedProcess."""
     return subprocess.run(
         ["python3", _companion_script()] + args,
+        input=stdin_text,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -286,8 +287,13 @@ class TestRegisterCLI(unittest.TestCase):
                 },
             },
         )
+        self.initial_config = _read_config(self.tmp_home)
         with companion.RATE_LIMIT_LOCK:
             companion.RATE_LIMIT_STORE.clear()
+
+    def _assert_config_unchanged(self):
+        """Verify register_cmd did not modify the client-side config file."""
+        self.assertEqual(_read_config(self.tmp_home), self.initial_config)
 
     def _parse_credentials(self, stdout):
         """Extract client_id and client_secret from register output."""
@@ -309,35 +315,64 @@ class TestRegisterCLI(unittest.TestCase):
         with companion.CLIENTS_LOCK:
             companion.CLIENTS.pop(client_id, None)
 
-    def test_register_cli_auto_generated(self):
-        """register with no --new-client-id/--new-client-secret: both auto-generated."""
-        result = _run(["register", "--name", "auto-cli"], env=self.env)
+    # --- Non-interactive credential tests ---
+
+    def test_without_id_without_secret_non_interactive(self):
+        """Non-interactive, no id/secret flags: both auto-generated."""
+        result = _run(["register", "--server", "testserver", "--name", "auto-both"], env=self.env)
         self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         client_id, client_secret = self._parse_credentials(result.stdout)
-        # Auto-generated id is a 32-char hex string
         self.assertEqual(len(client_id), 32)
         self.assertTrue(all(c in "0123456789abcdef" for c in client_id))
         self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
         self._cleanup_client(client_id)
 
-    def test_register_cli_with_id(self):
-        """register --new-client-id: provided id, auto-generated secret."""
-        chosen_id = "cli-chosen-id"
+    def test_with_id_without_secret_non_interactive(self):
+        """Non-interactive, --new-client-id only: secret auto-generated."""
+        chosen_id = "ni-id-only"
         self._cleanup_client(chosen_id)
-        result = _run(["register", "--name", "id-cli", "--new-client-id", chosen_id], env=self.env)
+        result = _run(
+            ["register", "--server", "testserver", "--name", "id-only", "--new-client-id", chosen_id], env=self.env
+        )
         self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         client_id, client_secret = self._parse_credentials(result.stdout)
         self.assertEqual(client_id, chosen_id)
         self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
         self._cleanup_client(chosen_id)
 
-    def test_register_cli_with_id_and_secret(self):
-        """register --new-client-id --new-client-secret: both provided."""
-        chosen_id = "cli-full-id"
-        chosen_secret = "deadbeef" * 8  # must be hex — server validates charset
+    def test_without_id_with_secret_non_interactive(self):
+        """Non-interactive, --new-client-secret only: id auto-generated."""
+        chosen_secret = "deadbeef" * 8
+        result = _run(
+            ["register", "--server", "testserver", "--name", "sec-only", "--new-client-secret", chosen_secret],
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        client_id, client_secret = self._parse_credentials(result.stdout)
+        self.assertEqual(client_secret, chosen_secret)
+        self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
+        self._cleanup_client(client_id)
+
+    def test_with_id_with_secret_non_interactive(self):
+        """Non-interactive, both flags provided."""
+        chosen_id = "ni-full-id"
+        chosen_secret = "cafebabe" * 8
         self._cleanup_client(chosen_id)
         result = _run(
-            ["register", "--name", "full-cli", "--new-client-id", chosen_id, "--new-client-secret", chosen_secret],
+            [
+                "register",
+                "--server",
+                "testserver",
+                "--name",
+                "full",
+                "--new-client-id",
+                chosen_id,
+                "--new-client-secret",
+                chosen_secret,
+            ],
             env=self.env,
         )
         self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
@@ -345,15 +380,130 @@ class TestRegisterCLI(unittest.TestCase):
         self.assertEqual(client_id, chosen_id)
         self.assertEqual(client_secret, chosen_secret)
         self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
         self._cleanup_client(chosen_id)
+
+    # --- Interactive credential tests ---
+
+    def test_without_id_without_secret_interactive(self):
+        """Interactive, no flags: prompted for both id and secret via stdin."""
+        chosen_id = "int-both-id"
+        chosen_secret = "abcd1234" * 8
+        self._cleanup_client(chosen_id)
+        # stdin: name, id, secret
+        stdin_text = f"int-client\n{chosen_id}\n{chosen_secret}\n"
+        result = _run(["register", "--server", "testserver", "--interactive"], env=self.env, stdin_text=stdin_text)
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        client_id, client_secret = self._parse_credentials(result.stdout)
+        self.assertEqual(client_id, chosen_id)
+        self.assertEqual(client_secret, chosen_secret)
+        self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
+        self._cleanup_client(chosen_id)
+
+    def test_with_id_without_secret_interactive(self):
+        """Interactive, --new-client-id flag: prompted for secret via stdin."""
+        chosen_id = "int-id-flag"
+        chosen_secret = "11223344" * 8
+        self._cleanup_client(chosen_id)
+        # stdin: name, secret (id already provided via flag)
+        stdin_text = f"int-client\n{chosen_secret}\n"
+        result = _run(
+            ["register", "--server", "testserver", "--interactive", "--new-client-id", chosen_id],
+            env=self.env,
+            stdin_text=stdin_text,
+        )
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        client_id, client_secret = self._parse_credentials(result.stdout)
+        self.assertEqual(client_id, chosen_id)
+        self.assertEqual(client_secret, chosen_secret)
+        self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
+        self._cleanup_client(chosen_id)
+
+    def test_without_id_with_secret_interactive(self):
+        """Interactive, --new-client-secret flag: prompted for id via stdin."""
+        chosen_id = "int-sec-flag"
+        chosen_secret = "55667788" * 8
+        self._cleanup_client(chosen_id)
+        # stdin: name, id (secret already provided via flag)
+        stdin_text = f"int-client\n{chosen_id}\n"
+        result = _run(
+            ["register", "--server", "testserver", "--interactive", "--new-client-secret", chosen_secret],
+            env=self.env,
+            stdin_text=stdin_text,
+        )
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        client_id, client_secret = self._parse_credentials(result.stdout)
+        self.assertEqual(client_id, chosen_id)
+        self.assertEqual(client_secret, chosen_secret)
+        self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
+        self._cleanup_client(chosen_id)
+
+    def test_with_id_with_secret_interactive(self):
+        """Interactive, both flags: no credential prompts."""
+        chosen_id = "int-full-flag"
+        chosen_secret = "aabbccdd" * 8
+        self._cleanup_client(chosen_id)
+        # stdin: name only (both creds provided via flags)
+        stdin_text = "int-client\n"
+        result = _run(
+            [
+                "register",
+                "--server",
+                "testserver",
+                "--interactive",
+                "--new-client-id",
+                chosen_id,
+                "--new-client-secret",
+                chosen_secret,
+            ],
+            env=self.env,
+            stdin_text=stdin_text,
+        )
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        client_id, client_secret = self._parse_credentials(result.stdout)
+        self.assertEqual(client_id, chosen_id)
+        self.assertEqual(client_secret, chosen_secret)
+        self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
+        self._cleanup_client(chosen_id)
+
+    # --- Server validation tests ---
+
+    def test_no_server_flag_errors(self):
+        """No --server flag, non-interactive: error mentioning --server."""
+        result = _run(["register"], env=self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--server", result.stderr)
+
+    def test_unknown_server_errors(self):
+        """--server nosuch: error mentioning not found."""
+        result = _run(["register", "--server", "nosuch"], env=self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not found", result.stderr)
+
+    def test_interactive_blank_server_uses_default(self):
+        """Interactive, blank server via stdin: uses default-server from config."""
+        # stdin: blank server (use default), name, blank id (auto), blank secret (auto)
+        stdin_text = "\nint-default\n\n\n"
+        result = _run(["register", "--interactive"], env=self.env, stdin_text=stdin_text)
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        client_id, client_secret = self._parse_credentials(result.stdout)
+        self._verify_client_on_server(client_id, client_secret)
+        self._assert_config_unchanged()
+        self._cleanup_client(client_id)
+
+    # --- Existing tests (kept) ---
 
     def test_register_cli_duplicate(self):
         """register same --new-client-id twice: second fails."""
         dup_id = "cli-dup-id"
         self._cleanup_client(dup_id)
-        result = _run(["register", "--new-client-id", dup_id], env=self.env)
+        result = _run(["register", "--server", "testserver", "--new-client-id", dup_id], env=self.env)
         self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
-        result = _run(["register", "--new-client-id", dup_id], env=self.env)
+        result = _run(["register", "--server", "testserver", "--new-client-id", dup_id], env=self.env)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("already exists", result.stdout)
         self._cleanup_client(dup_id)
@@ -375,7 +525,7 @@ class TestRegisterCLI(unittest.TestCase):
                 },
             },
         )
-        result = _run(["register", "--name", "should-fail"], env=self.env)
+        result = _run(["register", "--server", "testserver", "--name", "should-fail"], env=self.env)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Registration failed", result.stdout)
         self.assertIn("Admin access required", result.stdout)

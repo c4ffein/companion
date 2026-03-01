@@ -2410,89 +2410,48 @@ def connect_cmd(args):
     print(f"   Config saved to {CONFIG_PATH}")
 
 
-def register_cmd(args):  # TODO this command is supposed to register another user => just print the credentials...
-    # TODO this command should actually only be there to register a new user on a server we're already connected with
-    # TODO this command should require admin rights
-    # TODO implement the tests
-    """Registers a new client using admin credentials (from config or CLI flags).
-
-    If the server already exists in config, prints credentials without saving
-    (to avoid overwriting admin creds).
-
-    Default (non-interactive): resolves server URL and admin credentials from
-    flags or config.  With --interactive: prompts for any missing field.
-    """
+def register_cmd(args):
+    """Register a new client on a server using admin credentials from config."""
     interactive = getattr(args, "interactive", False)
-    config = load_config()
 
-    # Resolve server_url: flag first, then config
-    server_url = getattr(args, "server_url", None)
-    client_id = getattr(args, "client_id", None)
-    client_secret = getattr(args, "client_secret", None)
-    name = getattr(args, "name", "") or ""
-
-    # Try config fallback for missing fields
+    # Server resolution: --server is mandatory
     server_name = getattr(args, "server", None)
-    if config:
-        if not server_name:
-            server_name = config.get("default-server", "default")
-        server_cfg = config.get("servers", {}).get(server_name, {})
-        if not server_url:
-            server_url = server_cfg.get("url")
-        if not client_id:
-            client_id = server_cfg.get("client-id")
-        if not client_secret:
-            client_secret = server_cfg.get("client-secret")
     if not server_name:
-        server_name = "default"
+        if not interactive:
+            print("Error: --server is required. Provide --server or use --interactive.", file=sys.stderr)
+            sys.exit(1)
+        config = load_config()
+        default_server = config.get("default-server", "") if config else ""
+        prompt = f"Server name [{default_server}]: " if default_server else "Server name: "
+        server_name = input(prompt).strip() or default_server
+        if not server_name:
+            print("Error: No server name provided.", file=sys.stderr)
+            sys.exit(1)
+        args.server = server_name
 
-    if interactive:
-        if not server_url:
-            server_url = input("Server URL: ").strip()
-        if not client_id:
-            client_id = input("Admin client ID: ").strip()
-        if not client_secret:
-            client_secret = input("Admin client secret: ").strip()
-        if not name:
-            name = input("Client name (blank for none): ").strip()
-
-    # Validate required fields
-    missing = []
-    if not server_url:
-        missing.append("--server-url")
-    if not client_id:
-        missing.append("--client-id")
-    if not client_secret:
-        missing.append("--client-secret")
-    if missing:
-        print(f"Error: Missing required fields: {', '.join(missing)}", file=sys.stderr)
-        print("Provide all flags or use --interactive to be prompted.", file=sys.stderr)
+    server_url, auth_token = resolve_server(args)
+    if not auth_token:
+        print("Error: No admin credentials found for this server.", file=sys.stderr)
         sys.exit(1)
 
-    auth_token = f"{client_id}:{client_secret}"
+    # New-client fields
+    name = getattr(args, "name", "") or ""
     new_client_id = getattr(args, "new_client_id", None)
     new_client_secret = getattr(args, "new_client_secret", None)
+
+    if interactive:
+        if not name:
+            name = input("Client name (blank for none): ").strip()
+        if not new_client_id:
+            new_client_id = input("New client ID (blank to auto-generate): ").strip() or None
+        if not new_client_secret:
+            new_client_secret = input("New client secret (blank to auto-generate): ").strip() or None
+
     new_client_id, new_client_secret = register_client(
         server_url, name, auth_token, new_client_id=new_client_id, new_client_secret=new_client_secret
     )
-    if new_client_id:  # TODO clean
-        with _config_locked() as config:
-            servers = config.get("servers", {})
-            if server_name in servers:
-                # Admin registering someone else — don't overwrite own creds
-                print(f"\n   Server '{server_name}' already in config; credentials NOT saved.")
-                print("   Share the credentials above with the new client.")
-            else:
-                # First-time setup — save new client creds
-                servers = config.setdefault("servers", {})
-                servers[server_name] = {
-                    "url": server_url,
-                    "client-id": new_client_id,
-                    "client-secret": new_client_secret,
-                }
-                if "default-server" not in config:
-                    config["default-server"] = server_name
-                print(f"\n   Credentials saved to {CONFIG_PATH}")
+    if new_client_id:
+        print("\n   Share the credentials above with the new client.")
     sys.exit(0 if new_client_id else 1)
 
 
