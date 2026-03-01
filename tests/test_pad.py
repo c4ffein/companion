@@ -41,7 +41,7 @@ class TestPadAPI(unittest.TestCase):
         """Start server in background thread"""
         cls.port = 8888
         cls.client_id = "test-client-id"
-        cls.client_secret = "test-client-secret"
+        cls.client_secret = secrets.token_hex(32)
         cls.auth_token = f"{cls.client_id}:{cls.client_secret}"
         cls.base_url = f"http://localhost:{cls.port}"
 
@@ -91,7 +91,8 @@ class TestPadAPI(unittest.TestCase):
 
     def test_get_pad_empty(self):
         """Test getting empty pad content"""
-        req = urllib.request.Request(f"{self.base_url}/api/pad")
+        headers = {"Authorization": f"Bearer {self.auth_token}"}
+        req = urllib.request.Request(f"{self.base_url}/api/pad", headers=headers)
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertEqual(result["content"], "")
@@ -141,7 +142,8 @@ class TestPadAPI(unittest.TestCase):
             timestamp = result["timestamp"]
 
         # Get content
-        req = urllib.request.Request(f"{self.base_url}/api/pad")
+        get_headers = {"Authorization": f"Bearer {self.auth_token}"}
+        req = urllib.request.Request(f"{self.base_url}/api/pad", headers=get_headers)
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertEqual(result["content"], content)
@@ -196,7 +198,8 @@ class TestPadAPI(unittest.TestCase):
             self.assertTrue(result["success"])
 
         # Get and verify unicode content
-        req = urllib.request.Request(f"{self.base_url}/api/pad")
+        get_headers = {"Authorization": f"Bearer {self.auth_token}"}
+        req = urllib.request.Request(f"{self.base_url}/api/pad", headers=get_headers)
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertEqual(result["content"], content)
@@ -221,7 +224,8 @@ class TestPadAPI(unittest.TestCase):
             self.assertEqual(result["size"], 0)
 
         # Verify empty
-        req = urllib.request.Request(f"{self.base_url}/api/pad")
+        get_headers = {"Authorization": f"Bearer {self.auth_token}"}
+        req = urllib.request.Request(f"{self.base_url}/api/pad", headers=get_headers)
         with urllib.request.urlopen(req) as response:
             result = json.loads(response.read().decode())
             self.assertEqual(result["content"], "")
@@ -235,7 +239,7 @@ class TestPadCLI(unittest.TestCase):
         """Start server in background thread"""
         cls.port = 8889
         cls.client_id = "test-cli-id"
-        cls.client_secret = "test-cli-secret"
+        cls.client_secret = secrets.token_hex(32)
         cls.auth_token = f"{cls.client_id}:{cls.client_secret}"
         cls.base_url = f"http://localhost:{cls.port}"
 
@@ -297,7 +301,7 @@ class TestPadCLI(unittest.TestCase):
         urllib.request.urlopen(req)
 
         # Test get-pad CLI
-        result = companion.get_pad(self.base_url)
+        result = companion.get_pad(self.base_url, self.auth_token)
         self.assertTrue(result)
 
     @patch("sys.stdout", new_callable=io.StringIO)
@@ -308,7 +312,8 @@ class TestPadCLI(unittest.TestCase):
         self.assertTrue(result)
 
         # Verify via API
-        req = urllib.request.Request(f"{self.base_url}/api/pad")
+        get_headers = {"Authorization": f"Bearer {self.auth_token}"}
+        req = urllib.request.Request(f"{self.base_url}/api/pad", headers=get_headers)
         with urllib.request.urlopen(req) as response:
             api_result = json.loads(response.read().decode())
             self.assertEqual(api_result["content"], content)

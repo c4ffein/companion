@@ -161,6 +161,12 @@ class FileShareE2ETest(unittest.TestCase):
 
         shutil.rmtree(cls.temp_home, ignore_errors=True)
 
+    def _auth_open(self, url, auth_token=None):
+        """Open a URL with Bearer auth. Uses self.auth_token by default."""
+        token = auth_token or self.auth_token
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        return urllib.request.urlopen(req)
+
     def test_01_server_responds_to_index(self):
         """Test that server serves the main page"""
         response = urllib.request.urlopen(f"{self.server_url}/")
@@ -173,7 +179,11 @@ class FileShareE2ETest(unittest.TestCase):
 
     def test_02_empty_file_list(self):
         """Test that file list is initially empty"""
-        response = urllib.request.urlopen(f"{self.server_url}/api/files")
+        response = urllib.request.urlopen(
+            urllib.request.Request(
+                f"{self.server_url}/api/files", headers={"Authorization": f"Bearer {self.auth_token}"}
+            )
+        )
         files = json.loads(response.read().decode())
 
         self.assertEqual(response.status, 200)
@@ -212,7 +222,11 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertIn("Upload successful", result.stdout)
 
             # Verify file appears in file list
-            response = urllib.request.urlopen(f"{self.server_url}/api/files")
+            response = urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{self.server_url}/api/files", headers={"Authorization": f"Bearer {self.auth_token}"}
+                )
+            )
             files = json.loads(response.read().decode())
 
             self.assertEqual(len(files), 1)
@@ -289,7 +303,7 @@ class FileShareE2ETest(unittest.TestCase):
 
         # Download and verify using file_id
         download_url = f"{self.server_url}/download/{result['id']}"
-        response = urllib.request.urlopen(download_url)
+        response = self._auth_open(download_url)
         downloaded_content = response.read()
 
         self.assertEqual(downloaded_content, test_content)
@@ -298,7 +312,7 @@ class FileShareE2ETest(unittest.TestCase):
     def test_06_download_nonexistent_file(self):
         """Test that downloading nonexistent file returns 404"""
         try:
-            urllib.request.urlopen(f"{self.server_url}/download/00000000-0000-0000-0000-000000000000")
+            self._auth_open(f"{self.server_url}/download/00000000-0000-0000-0000-000000000000")
             self.fail("Should have raised HTTPError")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
@@ -349,7 +363,11 @@ class FileShareE2ETest(unittest.TestCase):
                 self.assertEqual(returncode, 0, f"Client {i} failed")
 
             # Verify all files present
-            response = urllib.request.urlopen(f"{self.server_url}/api/files")
+            response = urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{self.server_url}/api/files", headers={"Authorization": f"Bearer {self.auth_token}"}
+                )
+            )
             files = json.loads(response.read().decode())
             filenames = [f["name"] for f in files]
 
@@ -394,10 +412,10 @@ class FileShareE2ETest(unittest.TestCase):
         self.assertNotEqual(file_ids[0], file_ids[1])
 
         # Both should be downloadable with correct content
-        resp1 = urllib.request.urlopen(f"{self.server_url}/download/{file_ids[0]}")
+        resp1 = self._auth_open(f"{self.server_url}/download/{file_ids[0]}")
         self.assertEqual(resp1.read(), content1)
 
-        resp2 = urllib.request.urlopen(f"{self.server_url}/download/{file_ids[1]}")
+        resp2 = self._auth_open(f"{self.server_url}/download/{file_ids[1]}")
         self.assertEqual(resp2.read(), content2)
 
     def test_08b_upload_binary_file(self):
@@ -432,13 +450,17 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
 
             # Get file_id from file list
-            response = urllib.request.urlopen(f"{self.server_url}/api/files")
+            response = urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{self.server_url}/api/files", headers={"Authorization": f"Bearer {self.auth_token}"}
+                )
+            )
             files = json.loads(response.read().decode())
             uploaded = next(f for f in files if f["name"] == Path(test_file).name)
 
             # Download and verify byte-for-byte equality
             download_url = f"{self.server_url}/download/{uploaded['id']}"
-            response = urllib.request.urlopen(download_url)
+            response = self._auth_open(download_url)
             downloaded_content = response.read()
 
             self.assertEqual(downloaded_content, test_content)
@@ -485,7 +507,11 @@ class FileShareE2ETest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, f"Failed to upload {name}")
 
             # Verify all files are listed
-            response = urllib.request.urlopen(f"{self.server_url}/api/files")
+            response = urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{self.server_url}/api/files", headers={"Authorization": f"Bearer {self.auth_token}"}
+                )
+            )
             files = json.loads(response.read().decode())
             filenames = [f["name"] for f in files]
 
@@ -529,7 +555,11 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
 
             # Check metadata
-            response = urllib.request.urlopen(f"{self.server_url}/api/files")
+            response = urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{self.server_url}/api/files", headers={"Authorization": f"Bearer {self.auth_token}"}
+                )
+            )
             files = json.loads(response.read().decode())
 
             uploaded_file = next(f for f in files if f["name"] == Path(test_file).name)
@@ -550,7 +580,7 @@ class FileShareE2ETest(unittest.TestCase):
 
     def test_11_preview_state_initial(self):
         """Test that initial preview state is empty"""
-        response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        response = self._auth_open(f"{self.server_url}/api/preview/current")
         state = json.loads(response.read().decode())
 
         self.assertEqual(response.status, 200)
@@ -619,7 +649,7 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertIn("Timestamp: 1", result.stdout)
 
             # Verify preview state via API
-            response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+            response = self._auth_open(f"{self.server_url}/api/preview/current")
             state = json.loads(response.read().decode())
 
             self.assertEqual(state["filename"], filename)
@@ -767,7 +797,7 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertIn("Preview set", result.stdout)
 
             # Verify preview state
-            response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+            response = self._auth_open(f"{self.server_url}/api/preview/current")
             state = json.loads(response.read().decode())
             self.assertEqual(state["filename"], Path(test_file).name)
 
@@ -806,7 +836,7 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
 
             # Check mimetype in preview state
-            response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+            response = self._auth_open(f"{self.server_url}/api/preview/current")
             state = json.loads(response.read().decode())
             self.assertTrue(state["mimetype"].startswith("text/"))
 
@@ -816,7 +846,7 @@ class FileShareE2ETest(unittest.TestCase):
     def test_15b_preview_timestamp_increments(self):
         """Test that preview timestamp increments atomically on each update"""
         # Get current timestamp first
-        response_initial = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        response_initial = self._auth_open(f"{self.server_url}/api/preview/current")
         state_initial = json.loads(response_initial.read().decode())
         initial_timestamp = state_initial["timestamp"]
 
@@ -864,7 +894,7 @@ class FileShareE2ETest(unittest.TestCase):
         urllib.request.urlopen(req)
 
         # Check timestamp incremented by 1
-        response1 = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        response1 = self._auth_open(f"{self.server_url}/api/preview/current")
         state1 = json.loads(response1.read().decode())
         self.assertEqual(state1["timestamp"], initial_timestamp + 1)
         self.assertEqual(state1["filename"], filenames[0])
@@ -884,7 +914,7 @@ class FileShareE2ETest(unittest.TestCase):
         urllib.request.urlopen(req)
 
         # Check timestamp incremented by 2 from initial
-        response2 = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        response2 = self._auth_open(f"{self.server_url}/api/preview/current")
         state2 = json.loads(response2.read().decode())
         self.assertEqual(state2["timestamp"], initial_timestamp + 2)
         self.assertEqual(state2["filename"], filenames[1])
@@ -937,7 +967,7 @@ class FileShareE2ETest(unittest.TestCase):
         self.assertEqual(result_json["filename"], test_filename)
         self.assertGreater(result_json["timestamp"], 0)
         # Verify state
-        state_response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        state_response = self._auth_open(f"{self.server_url}/api/preview/current")
         state = json.loads(state_response.read().decode())
         self.assertEqual(state["file_id"], file_id)
         self.assertEqual(state["filename"], test_filename)
@@ -998,7 +1028,7 @@ class FileShareE2ETest(unittest.TestCase):
                 f"Timestamp should increment by 1: {timestamps}",
             )
         # Verify final state
-        state_response = urllib.request.urlopen(f"{self.server_url}/api/preview/current")
+        state_response = self._auth_open(f"{self.server_url}/api/preview/current")
         state = json.loads(state_response.read().decode())
         self.assertEqual(state["file_id"], file_ids[-1])
         self.assertEqual(state["filename"], filenames[-1])
@@ -1105,6 +1135,10 @@ class FileShareE2ETest(unittest.TestCase):
                         download_dir,
                         "--server-url",
                         self.server_url,
+                        "--client-id",
+                        self.client_id,
+                        "--client-secret",
+                        self.client_secret,
                     ],
                     capture_output=True,
                     text=True,
@@ -1134,6 +1168,10 @@ class FileShareE2ETest(unittest.TestCase):
                     download_dir,
                     "--server-url",
                     self.server_url,
+                    "--client-id",
+                    self.client_id,
+                    "--client-secret",
+                    self.client_secret,
                 ],
                 capture_output=True,
                 text=True,
@@ -1189,6 +1227,10 @@ class FileShareE2ETest(unittest.TestCase):
                         download_dir,
                         "--server-url",
                         self.server_url,
+                        "--client-id",
+                        self.client_id,
+                        "--client-secret",
+                        self.client_secret,
                     ],
                     capture_output=True,
                     text=True,
@@ -1240,6 +1282,10 @@ class FileShareE2ETest(unittest.TestCase):
                     download_dir,
                     "--server-url",
                     self.server_url,
+                    "--client-id",
+                    self.client_id,
+                    "--client-secret",
+                    self.client_secret,
                 ],
                 capture_output=True,
                 text=True,
@@ -1292,10 +1338,10 @@ class FileShareE2ETest(unittest.TestCase):
 
     def test_26_admin_can_register_others(self):
         """Test that admin can register new clients"""
-        import uuid
+        import secrets as _secrets
 
-        new_id = str(uuid.uuid4())
-        new_secret = str(uuid.uuid4())
+        new_id = _secrets.token_hex(16)
+        new_secret = _secrets.token_hex(32)
 
         register_data = json.dumps(
             {
@@ -1344,8 +1390,8 @@ class FileShareE2ETest(unittest.TestCase):
             self.assertTrue(result["success"])
 
         # Verify the new client cannot register others
-        another_id = str(uuid.uuid4())
-        another_secret = str(uuid.uuid4())
+        another_id = _secrets.token_hex(16)
+        another_secret = _secrets.token_hex(32)
         register_data = json.dumps(
             {
                 "client_id": another_id,
@@ -1370,11 +1416,11 @@ class FileShareE2ETest(unittest.TestCase):
 
     def test_28_delete_client_by_admin(self):
         """Test that admin can delete a registered client"""
-        import uuid
+        import secrets as _secrets
 
         # Register a client to delete
-        new_id = str(uuid.uuid4())
-        new_secret = str(uuid.uuid4())
+        new_id = _secrets.token_hex(16)
+        new_secret = _secrets.token_hex(32)
         register_data = json.dumps(
             {
                 "client_id": new_id,
@@ -1431,11 +1477,11 @@ class FileShareE2ETest(unittest.TestCase):
 
     def test_30_non_admin_cannot_delete(self):
         """Test that non-admin cannot delete clients"""
-        import uuid
+        import secrets as _secrets
 
         # Register a non-admin client
-        non_admin_id = str(uuid.uuid4())
-        non_admin_secret = str(uuid.uuid4())
+        non_admin_id = _secrets.token_hex(16)
+        non_admin_secret = _secrets.token_hex(32)
         register_data = json.dumps(
             {
                 "client_id": non_admin_id,
@@ -1455,8 +1501,8 @@ class FileShareE2ETest(unittest.TestCase):
         urllib.request.urlopen(req)
 
         # Non-admin tries to delete someone else
-        target_id = str(uuid.uuid4())
-        target_secret = str(uuid.uuid4())
+        target_id = _secrets.token_hex(16)
+        target_secret = _secrets.token_hex(32)
         register_data2 = json.dumps(
             {
                 "client_id": target_id,
@@ -1679,7 +1725,11 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("Failed to list files", result.stdout)
 
     def test_04_server_url_flag_overrides_config(self):
-        """Test that --server-url flag overrides config entirely"""
+        """Test that --server-url flag overrides config entirely.
+
+        --server-url bypasses config credentials, so without explicit
+        --client-id/--client-secret the CLI exits with 'Credentials required'.
+        """
         config = {
             "default-server": "default",
             "servers": {"default": {"url": "http://localhost:1111", "client-id": "id1", "client-secret": "s1"}},
@@ -1687,7 +1737,7 @@ class ConfigTest(unittest.TestCase):
         self.config_file.write_text(json.dumps(config))
         result = self._run_with_home(["list", "--server-url", "http://localhost:3333"])
         self.assertNotIn("No server specified", result.stderr)
-        self.assertIn("Failed to list files", result.stdout)
+        self.assertIn("Credentials required", result.stderr)
 
     def test_05_credentials_flag_overrides_config(self):
         """Test that --client-id/--client-secret flags override config credentials"""
@@ -1787,7 +1837,12 @@ class ConfigTest(unittest.TestCase):
 
         server_process = _start_server(self.companion_script, 8767, server_env, extra_args=[])
         try:
-            response = urllib.request.urlopen("http://localhost:8767/api/files")
+            auth_token = f"{client_id}:{client_secret}"
+            req = urllib.request.Request(
+                "http://localhost:8767/api/files",
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
+            response = urllib.request.urlopen(req)
             self.assertEqual(response.status, 200)
 
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -1821,7 +1876,7 @@ class ConfigTest(unittest.TestCase):
         server_env = {**self.env, "HOME": self.temp_dir}
 
         # Set up config pointing to port 8888 (config URL)
-        _setup_server_config(
+        client_id, client_secret = _setup_server_config(
             self.companion_script,
             8888,
             server_env,
@@ -1831,10 +1886,15 @@ class ConfigTest(unittest.TestCase):
         # Start server with --port 8768 override
         server_process = _start_server(self.companion_script, 8768, server_env, extra_args=["--port", "8768"])
         try:
-            response = urllib.request.urlopen("http://localhost:8768/api/files")
+            auth_token = f"{client_id}:{client_secret}"
+            req = urllib.request.Request(
+                "http://localhost:8768/api/files",
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
+            response = urllib.request.urlopen(req)
             self.assertEqual(response.status, 200)
             try:
-                urllib.request.urlopen("http://localhost:8888/api/files", timeout=1)
+                urllib.request.urlopen("http://localhost:8888/", timeout=1)
                 self.fail("Server should not be on port 8888")
             except urllib.error.URLError:
                 pass

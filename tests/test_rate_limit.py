@@ -40,7 +40,7 @@ class TestRateLimit(unittest.TestCase):
         """Start server in background thread"""
         cls.port = 8890
         cls.client_id = "test-rate-id"
-        cls.client_secret = "test-rate-secret"
+        cls.client_secret = secrets.token_hex(32)
         cls.auth_token = f"{cls.client_id}:{cls.client_secret}"
         cls.base_url = f"http://localhost:{cls.port}"
 

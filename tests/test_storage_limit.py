@@ -40,7 +40,7 @@ class TestStorageLimit(unittest.TestCase):
         """Start server in background thread"""
         cls.port = 8891
         cls.client_id = "test-storage-id"
-        cls.client_secret = "test-storage-secret"
+        cls.client_secret = secrets.token_hex(32)
         cls.auth_token = f"{cls.client_id}:{cls.client_secret}"
         cls.base_url = f"http://localhost:{cls.port}"
 
