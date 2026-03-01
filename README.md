@@ -7,11 +7,14 @@ A minimal, single-file Python tool for ephemeral file sharing on local networks.
 - **Single file**: Just `companion.py` - easy to audit and deploy, works as both server and client
 - **Zero dependencies**: Python 3.7+ standard library only
 - **In-memory storage**: Ephemeral by design - files disappear on restart
-- **API key auth**: Simple Bearer token authentication for allowing uploads
+- **Per-client auth**: Bearer token authentication with per-client salted SHA-256 hashing
 - **Web interface**: Clean, responsive UI with tab navigation and auto-refresh
 - **File preview**: Preview images, videos, audio, PDFs, and text files in-browser
 - **Presentation mode**: Control what all clients see from the CLI
+- **Shared pad**: Real-time shared text pad between all clients
 - **CLI client**: Upload files, list files, and control previews from command line
+- **Rate limiting**: Per-IP sliding window rate limiting on write endpoints
+- **Storage limits**: Per-client storage caps (4GB default)
 - **Tested**: Comprehensive E2E test suite included
 
 ## Quick Start
@@ -19,43 +22,58 @@ A minimal, single-file Python tool for ephemeral file sharing on local networks.
 ### Start Server
 
 ```bash
-# Default: http://localhost:8080
-python companion.py server --api-key mySecretKey123
+# First-time setup: creates config with admin credentials
+python companion.py server-setup --url http://localhost:8080
 
-# Custom port and API key
-python companion.py server --port 9000 --api-key mySecretKey123
+# Start the server
+python companion.py server
+
+# Custom port
+python companion.py server --port 9000
 ```
 
 Open http://localhost:8080 in your browser to see the web interface.
+
+### Add Users
+
+```bash
+# Add a user to the server (generates credentials)
+python companion.py server-add-user
+
+# Add an admin user
+python companion.py server-add-user --admin
+```
 
 ### Upload Files
 
 **Via Web Interface:**
 1. Open the server URL in your browser
-2. Enter your API key
+2. Enter your client ID and secret in the Settings tab
 3. Select a file and click Upload
 
 **Via Command Line:**
 ```bash
+# Save connection credentials locally
+python companion.py connect --url http://localhost:8080 --client-id ID --client-secret SECRET
+
 # Upload a file
-python companion.py upload http://localhost:8080 myfile.pdf --api-key mySecretKey123
+python companion.py upload myfile.pdf
 
 # Upload and automatically set as preview for all clients
-python companion.py upload http://localhost:8080 slides.pdf --api-key mySecretKey123 --set-preview
+python companion.py upload slides.pdf --set-preview
 ```
 
 ### List Files
 
 ```bash
-# List all available files
-python companion.py list http://localhost:8080
+python companion.py list
 ```
 
 ### Control Presentation Mode
 
 ```bash
 # Set what all connected clients see
-python companion.py set-preview http://localhost:8080 slides.pdf --api-key mySecretKey123
+python companion.py set-preview slides.pdf
 ```
 
 ## Use Cases
@@ -89,8 +107,9 @@ cd companion
 ### Running Tests
 
 ```bash
-make test  # Run all tests
-python test_companion.py  # Or directly with Python
+make test       # Run all tests (dev version)
+make test-built # Run all tests (built version)
+make test-all   # Run both
 ```
 
 ### Code Quality
@@ -106,14 +125,21 @@ make check   # Run all checks
 ```
 companion/
 ├── src/
-│   └── companion.py      # Development version (uses CDN for PDF.js)
-├── js_deps/              # JavaScript dependencies cache
-│   ├── pdf.min.mjs       # PDF.js library (auto-downloaded)
-│   └── pdf.worker.min.mjs # PDF.js worker (auto-downloaded)
-├── companion.py          # Built version (generated, includes inlined PDF.js)
-├── build.py              # Build tool to create companion.py from src/
-├── test_companion.py     # Test suite
-└── Makefile              # Build commands
+│   └── companion.py       # Development version (uses CDN for PDF.js)
+├── tests/
+│   ├── test_companion.py  # Main E2E test suite
+│   ├── test_auth_required.py
+│   ├── test_config_lock.py
+│   ├── test_pad.py
+│   ├── test_rate_limit.py
+│   ├── test_setup_commands.py
+│   └── test_storage_limit.py
+├── js_deps/               # JavaScript dependencies cache
+│   ├── pdf.min.mjs        # PDF.js library
+│   └── pdf.worker.min.mjs # PDF.js worker
+├── companion.py           # Built version (generated, includes inlined PDF.js)
+├── build.py               # Build tool to create companion.py from src/
+└── Makefile               # Build commands
 ```
 
 ### Building for Distribution
@@ -132,7 +158,7 @@ make build  # Creates companion.py at root with inlined PDF.js
 The build process:
 1. Reads `src/companion.py`
 2. Fetches PDF.js (~400KB) and PDF.js Worker (~1MB) from CDN (or uses cached versions in `js_deps/`)
-3. Inlines them into the Python source as JavaScript strings
+3. Base64-encodes and inlines them into the Python source as string constants
 4. Adds a marker to the docstring indicating it's a built version
 5. Writes `companion.py` to the root directory
 
@@ -148,41 +174,40 @@ The build process:
 **⚠️ Currently, this tool is designed for temporary, trusted, local network use only.**
 
 - Files are stored in memory without encryption (E2E encryption planned for future)
-- Uses simple Bearer token authentication
+- Per-client Bearer token authentication with salted SHA-256 hashing (timing-attack safe)
+- Per-IP rate limiting on write endpoints (30 requests/60s sliding window)
+- Per-client storage caps (4GB default)
 - No HTTPS support (use a reverse proxy if needed)
-- No rate limiting or DOS protection
 - Not intended for production or internet-facing deployments
 - Only use on trusted networks with trusted users
 
 ## API Reference
 
+All authenticated endpoints require `Authorization: Bearer <client_id>:<client_secret>`.
+
 ### Endpoints
 
-**GET /**
-- Returns the web interface HTML
+**GET /** - Web interface HTML
 
-**GET /api/files**
-- Returns JSON array of uploaded files
-- Response: `[{"name": "file.txt", "size": 1234, "mimetype": "text/plain", "uploaded": "2025-01-01T12:00:00"}]`
+**GET /api/files** - List uploaded files (auth required)
 
-**POST /api/upload**
-- Upload a file (multipart/form-data)
-- Requires `Authorization: Bearer <api-key>` header
-- Returns: `{"success": true, "filename": "file.txt", "size": 1234}`
+**POST /api/upload** - Upload a file via multipart/form-data (auth required)
 
-**GET /download/<filename>**
-- Download or preview a file
-- Returns file content with appropriate Content-Type and inline disposition
+**GET /download/\<file_id\>** - Download or preview a file (auth required)
 
-**GET /api/preview/current**
-- Get current preview state for all clients
-- Response: `{"filename": "file.txt", "timestamp": 1, "mimetype": "application/pdf"}`
+**GET /api/preview/current** - Get current shared preview state (auth required)
 
-**POST /api/preview/set**
-- Set the current preview for all clients (presentation mode)
-- Requires `Authorization: Bearer <api-key>` header
-- Body: `{"filename": "file.txt"}`
-- Returns: `{"success": true, "filename": "file.txt", "timestamp": 1}`
+**POST /api/preview/set** - Set the shared preview for all clients (auth required)
+
+**GET /api/pad** - Get shared pad content (auth required)
+
+**POST /api/pad** - Update shared pad content (auth required, 10MB limit)
+
+**POST /api/clients/register** - Register a new client (admin required)
+
+**GET /api/clients** - List registered clients (admin required)
+
+**DELETE /api/clients/\<id\>** - Delete a client (admin required)
 
 ## Roadmap
 
