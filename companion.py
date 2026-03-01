@@ -1578,7 +1578,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         if not self._require_auth():
             return
 
-        body = self._read_body()
+        body = self._read_body(max_bytes=PAD_MAX_SIZE + 1024)
         if body is None:
             return
 
@@ -2285,7 +2285,7 @@ def server_add_user_cmd(args):
     defaults.  With --interactive: prompts for each un-provided field.
     """
     interactive = getattr(args, "interactive", False)
-    server_name = getattr(args, "name", None)
+    server_name = getattr(args, "server", None)
     is_admin = getattr(args, "admin", False)
 
     # Resolve client ID
@@ -2546,7 +2546,7 @@ def main():
     setup_parser.add_argument("--interactive", action="store_true", help="Prompt for missing fields")
     # Server add-user mode
     add_user_parser = subparsers.add_parser("server-add-user", help="Add a user to a configured server")
-    add_user_parser.add_argument("--name", dest="name", help="Named server from config file")
+    add_user_parser.add_argument("--server", help="Named server from config file")
     add_user_parser.add_argument("--client-name", default="", help="Friendly name for this client")
     add_user_parser.add_argument("--admin", action="store_true", help="Grant admin privileges")
     add_user_parser.add_argument("--client-id", help="Client ID (auto-generated if blank)")
