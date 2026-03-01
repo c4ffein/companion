@@ -109,13 +109,13 @@ class TestStorageLimit(unittest.TestCase):
         )
         return urllib.request.urlopen(req)
 
-    def test_upload_within_limit(self):  # TODO review
+    def test_upload_within_limit(self):
         """Test that upload within storage limit succeeds"""
         response = self._upload("small.bin", b"x" * 500)
         result = json.loads(response.read().decode())
         self.assertTrue(result["success"])
 
-    def test_upload_exceeds_limit(self):  # TODO review
+    def test_upload_exceeds_limit(self):
         """Test that upload exceeding storage limit returns 413"""
         # First upload fills most of the limit
         self._upload("first.bin", b"x" * 800)
