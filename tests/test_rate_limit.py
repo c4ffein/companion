@@ -110,9 +110,50 @@ class TestRateLimit(unittest.TestCase):
             result = json.loads(response.read().decode())
             self.assertTrue(result["success"])
 
-    # TODO add a test with a number of entries just under the limit
+    def test_rate_limit_boundary(self):
+        """Pre-fill with RATE_LIMIT_MAX - 1 entries: next succeeds, one after returns 429."""
+        now = time.monotonic()
+        with companion.RATE_LIMIT_LOCK:
+            companion.RATE_LIMIT_STORE["127.0.0.1"] = [now] * (companion.RATE_LIMIT_MAX - 1)
 
-    # TODO add a test with a number of entries over the limit, but in the valid timeframe < limit  =>  check we clean
+        data = json.dumps({"content": "at the limit"}).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json",
+        }
+
+        # This request hits exactly RATE_LIMIT_MAX — should still succeed
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            self.assertTrue(result["success"])
+
+        # Next request exceeds the limit — should be rejected
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req)
+        self.assertEqual(cm.exception.code, 429)
+
+    def test_rate_limit_cleanup_expired(self):
+        """Pre-fill with 2x RATE_LIMIT_MAX old timestamps; next request succeeds after cleanup.
+
+        Using more than RATE_LIMIT_MAX ensures a buggy cleanup that keeps
+        expired entries would still trigger 429.
+        """
+        # Place all timestamps well before the window so they expire
+        old = time.monotonic() - companion.RATE_LIMIT_WINDOW - 10
+        with companion.RATE_LIMIT_LOCK:
+            companion.RATE_LIMIT_STORE["127.0.0.1"] = [old] * (companion.RATE_LIMIT_MAX * 2)
+
+        data = json.dumps({"content": "after cleanup"}).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json",
+        }
+        req = urllib.request.Request(f"{self.base_url}/api/pad", data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            self.assertTrue(result["success"])
 
 
 if __name__ == "__main__":
