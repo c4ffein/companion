@@ -47,6 +47,28 @@ def build_companion():
     with open("src/companion.py", "r", encoding="utf-8") as f:
         source = f.read()
 
+    # Inline HTML from src/index.html into the Python source
+    print("📄 Inlining src/index.html...")
+    with open("src/index.html", "r", encoding="utf-8") as f:
+        html_content = f.read()
+
+    # Replace the file-loading block with the inline HTML string
+    html_loading_block = (
+        '        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")\n'
+        "        try:\n"
+        '            with open(html_path, "r", encoding="utf-8") as f:\n'
+        "                html = f.read()\n"
+        "        except FileNotFoundError:\n"
+        '            raise FileNotFoundError(f"index.html not found at {html_path}")'
+    )
+    html_inline = f'        html = """{html_content}"""'
+    if html_loading_block not in source:
+        print("❌ ERROR: Could not find HTML file-loading block in source.")
+        print("   The source file may have been modified. Please update build.py.")
+        exit(1)
+    source = source.replace(html_loading_block, html_inline)
+    print(f"✅ Inlined {len(html_content):,} bytes of HTML")
+
     # Fetch PDF.js files (or load from cache)
     pdf_js_url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs"
     pdf_worker_url = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs"

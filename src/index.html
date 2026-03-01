@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html data-theme="dark">
+<head>
+    <title>Companion</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- PDF.js CDN - will be inlined in build -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs" type="module"></script>
+    <style>
+        [data-theme="light"] {
+            --bg-body: #f5f5f5; --bg-card: #ffffff; --bg-input: #ffffff; --bg-code: #f5f5f5; --bg-hover: #f5f5f5;
+            --text-primary: #333333; --text-secondary: #666666; --text-tertiary: #999999;
+            --border: #e0e0e0; --border-input: #dddddd;
+            --shadow-card: 0 2px 4px rgba(0,0,0,0.1); --shadow-nav: 0 -2px 10px rgba(0,0,0,0.1); --shadow-toast: 0 4px 12px rgba(0,0,0,0.3);
+            --accent: #007bff; --accent-hover: #0056b3; --accent-bg: #f0f8ff; --accent-text: #007bff;
+            --btn-secondary: #6c757d; --btn-secondary-hover: #545b62;
+            --success-bg: #d4edda; --success-text: #155724; --success-border: #c3e6cb;
+            --error-bg: #f8d7da; --error-text: #721c24; --error-border: #f5c6cb;
+            --warning-bg: #fff3cd;
+            --toast-bg: #333333; --toast-text: #ffffff;
+            --nav-bg: #ffffff; --nav-hover: #f5f5f5; --nav-active-bg: #f0f8ff;
+            --progress-bg: #e0e0e0;
+        }
+        [data-theme="dark"] {
+            --bg-body: #313338; --bg-card: #2b2d31; --bg-input: #383a40; --bg-code: #2b2d31; --bg-hover: #35373c;
+            --text-primary: #f2f3f5; --text-secondary: #b5bac1; --text-tertiary: #949ba4;
+            --border: #3f4147; --border-input: #3f4147;
+            --shadow-card: 0 2px 4px rgba(0,0,0,0.2); --shadow-nav: 0 -2px 8px rgba(0,0,0,0.3); --shadow-toast: 0 4px 12px rgba(0,0,0,0.5);
+            --accent: #5865f2; --accent-hover: #4752c4; --accent-bg: #2b2d31; --accent-text: #5865f2;
+            --btn-secondary: #4e5058; --btn-secondary-hover: #6d6f78;
+            --success-bg: #2a3c2a; --success-text: #23a559; --success-border: #2d4a2d;
+            --error-bg: #3c2a2a; --error-text: #da373c; --error-border: #4a2d2d;
+            --warning-bg: #3a3520;
+            --toast-bg: #1e1f22; --toast-text: #f2f3f5;
+            --nav-bg: #2b2d31; --nav-hover: #35373c; --nav-active-bg: #383a40;
+            --progress-bg: #3f4147;
+        }
+        [data-theme="black"] {
+            --bg-body: #000000; --bg-card: #000000; --bg-input: #111111; --bg-code: #1a1a1a; --bg-hover: #111111;
+            --text-primary: #e0e0e0; --text-secondary: #888888; --text-tertiary: #555555;
+            --border: #222222; --border-input: #333333;
+            --shadow-card: none; --shadow-nav: none; --shadow-toast: 0 4px 12px rgba(0,0,0,0.7);
+            --accent: #e94560; --accent-hover: #c73650; --accent-bg: #0a0a0a; --accent-text: #e94560;
+            --btn-secondary: #333333; --btn-secondary-hover: #444444;
+            --success-bg: #0a1a0a; --success-text: #6fcf97; --success-border: #1a2a1a;
+            --error-bg: #1a0a0a; --error-text: #eb5757; --error-border: #2a1a1a;
+            --warning-bg: #1a1a0a;
+            --toast-bg: #111111; --toast-text: #e0e0e0;
+            --nav-bg: #000000; --nav-hover: #111111; --nav-active-bg: #000000;
+            --progress-bg: #222222;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 40px auto 80px; padding: 0 20px; background: var(--bg-body); color: var(--text-primary); }
+        h1 { color: var(--text-primary); }
+        .tab-content { display: none; background: var(--bg-card); padding: 20px; border-radius: 8px; box-shadow: var(--shadow-card); }
+        .tab-content h2:first-child { margin-top: 0; }
+        .tab-content.active { display: block; }
+        .upload-form { margin: 0; }
+        .file-list { margin: 0; }
+        .file-item { padding: 12px; margin: 8px 0; border: 1px solid var(--border); border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .file-info { flex: 1; }
+        .file-name { font-weight: 600; color: var(--text-primary); }
+        .file-meta { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+        .file-actions { display: flex; gap: 8px; }
+        button, input[type="submit"] { background: var(--accent); color: var(--toast-text); border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        button:hover, input[type="submit"]:hover { background: var(--accent-hover); }
+        .btn-secondary { background: var(--btn-secondary); }
+        .btn-secondary:hover { background: var(--btn-secondary-hover); }
+        input[type="file"] { margin: 10px 0; color: var(--text-primary); }
+        input[type="text"], input[type="password"] { padding: 8px; border: 1px solid var(--border-input); border-radius: 4px; width: 300px; font-size: 14px; background: var(--bg-input); color: var(--text-primary); }
+        textarea { background: var(--bg-input); color: var(--text-primary); border-color: var(--border-input); }
+        textarea:focus, input[type="text"]:focus, input[type="password"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .status.success { background: var(--success-bg); color: var(--success-text); border: 1px solid var(--success-border); }
+        .status.error { background: var(--error-bg); color: var(--error-text); border: 1px solid var(--error-border); }
+        .empty-state { text-align: center; color: var(--text-tertiary); padding: 40px; }
+        .progress-container { display: none; margin: 10px 0; }
+        .progress-container.active { display: block; }
+        .progress-bar-bg { width: 100%; height: 24px; background: var(--progress-bg); border-radius: 12px; overflow: hidden; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-hover)); transition: width 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; font-weight: 600; }
+        .preview-container { max-width: 100%; }
+        .preview-container img { max-width: 100%; height: auto; border-radius: 4px; }
+        .preview-container video { max-width: 100%; height: auto; border-radius: 4px; }
+        .preview-container audio { width: 100%; }
+        .preview-container pre { background: var(--bg-code); padding: 15px; border-radius: 4px; overflow-x: auto; max-height: 500px; color: var(--text-primary); }
+        .preview-container iframe { width: 100%; height: 600px; border: 1px solid var(--border); border-radius: 4px; }
+        .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: var(--nav-bg); border-top: 1px solid var(--border); display: flex; box-shadow: var(--shadow-nav); }
+        .nav-button { flex: 1; padding: 16px; text-align: center; background: var(--nav-bg); border: none; cursor: pointer; font-size: 16px; color: var(--text-secondary); transition: background 0.2s, color 0.2s; }
+        .nav-button:hover { background: var(--nav-hover); }
+        .nav-button.active { color: var(--accent-text); background: var(--nav-active-bg); border-top: 3px solid var(--accent); }
+        .nav-button:not(:last-child) { border-right: 1px solid var(--border); }
+        .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: var(--toast-bg); color: var(--toast-text); padding: 12px 40px 12px 16px; border-radius: 6px; box-shadow: var(--shadow-toast); z-index: 1000; display: none; max-width: 90%; }
+        .toast.show { display: block; }
+        .toast-close { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--toast-text); font-size: 18px; cursor: pointer; padding: 0 4px; opacity: 0.7; }
+        .toast-close:hover { opacity: 1; background: none; }
+        .warning-box { padding: 15px; background: var(--warning-bg); border-radius: 4px; color: var(--text-primary); }
+        .theme-selector { display: flex; gap: 15px; }
+        .theme-selector label { color: var(--text-primary); cursor: pointer; }
+        code { background: var(--bg-code); color: var(--text-primary); padding: 2px 6px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div id="storageToast" class="toast">
+        Could not manage credentials through browser storage
+        <button class="toast-close" onclick="document.getElementById('storageToast').classList.remove('show')">&times;</button>
+    </div>
+    <div id="uploadTab" class="tab-content active">
+        <div class="upload-form">
+            <h2>Upload File</h2>
+            <form id="uploadForm">
+                <div>
+                    <input type="file" id="fileInput" required>
+                </div>
+                <input type="submit" value="Upload">
+            </form>
+            <div id="progressContainer" class="progress-container">
+                <div class="progress-bar-bg">
+                    <div id="progressBar" class="progress-bar" style="width: 0%">0%</div>
+                </div>
+            </div>
+            <div id="uploadStatus"></div>
+        </div>
+    </div>
+
+    <div id="filesTab" class="tab-content">
+        <div class="file-list">
+            <h2>Available Files</h2>
+            <div id="fileList">
+                <div class="empty-state">Loading...</div>
+            </div>
+            <div style="margin-top: 15px;">
+                <button id="refreshBtn" class="btn-secondary" style="display: none;">Refresh</button>
+                <label style="margin-left: 15px;">
+                    <input type="checkbox" id="autoRefresh" checked>
+                    Auto-refresh
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <div id="previewTab" class="tab-content">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 id="previewFileName" style="margin: 0;">Preview</h2>
+            <button id="previewDownloadBtn" style="display: none;">Download</button>
+        </div>
+        <div id="previewContent" class="preview-container">
+            <div class="empty-state">Select a file to preview</div>
+        </div>
+    </div>
+
+    <div id="padTab" class="tab-content">
+        <h2>Shared Pad</h2>
+        <textarea id="padContent" placeholder="Type or paste text here to share between devices..." style="width: 100%; height: 400px; padding: 10px; border: 1px solid var(--border-input); border-radius: 4px; font-family: monospace; font-size: 14px; resize: vertical; box-sizing: border-box;"></textarea>
+        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <div id="padStatus" style="font-size: 12px; color: var(--text-secondary);"></div>
+            <div style="font-size: 12px; color: var(--text-tertiary);">
+                <span id="padCharCount">0</span> characters
+            </div>
+        </div>
+    </div>
+
+    <div id="settingsTab" class="tab-content">
+        <h2>Authentication</h2>
+        <div id="settingsNoAuth" class="warning-box" style="margin-bottom: 15px;">
+            <p style="margin: 0 0 8px 0; font-weight: 600;">No credentials configured</p>
+            <p style="margin: 0; font-size: 14px;">Get credentials from your admin or run <code>companion server-add-user</code> on the CLI</p>
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Client ID</label>
+            <input type="text" id="settingsClientId" placeholder="Client ID" style="width: 100%; max-width: 400px;">
+        </div>
+        <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Client Secret</label>
+            <input type="password" id="settingsClientSecret" placeholder="Client Secret" style="width: 100%; max-width: 400px;">
+        </div>
+        <div style="margin-bottom: 15px;">
+            <button id="saveCredsBtn">Save Credentials</button>
+        </div>
+        <div id="settingsStatus"></div>
+        <h2 style="margin-top: 30px;">Theme</h2>
+        <div class="theme-selector">
+            <label><input type="radio" name="theme" value="light"> Light</label>
+            <label><input type="radio" name="theme" value="dark"> Dark</label>
+            <label><input type="radio" name="theme" value="black"> Black</label>
+        </div>
+    </div>
+
+    <div class="bottom-nav">
+        <button class="nav-button active" data-tab="upload">Upload</button>
+        <button class="nav-button" data-tab="files">Files</button>
+        <button class="nav-button" data-tab="preview">Preview</button>
+        <button class="nav-button" data-tab="pad">Pad</button>
+        <button class="nav-button" data-tab="settings">Settings</button>
+    </div>
+
+    <script type="module">
+        // PDF.js setup
+        import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs';
+
+        // Theme functions
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            try { localStorage.setItem('companion_theme', theme); } catch(e) {}
+            document.querySelectorAll('input[name="theme"]').forEach(r => {
+                r.checked = r.value === theme;
+            });
+        }
+        function loadTheme() {
+            try { return localStorage.getItem('companion_theme') || 'dark'; } catch(e) { return 'dark'; }
+        }
+        setTheme(loadTheme());
+
+        // PDF state (module-level)
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
+
+        let autoRefreshInterval = null;
+        let localPreviewTimestamp = 0;
+        let currentPreviewFileId = null;
+        let currentPreviewFilename = null;
+
+        // Pad state
+        let padSaveTimeout = null;
+        let localPadTimestamp = 0;
+        let isUpdatingPad = false;
+
+        // Tab switching
+        function switchTab(tab) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-button').forEach(el => el.classList.remove('active'));
+
+            // Show selected tab
+            if (tab === 'upload') {
+                document.getElementById('uploadTab').classList.add('active');
+                document.querySelector('[data-tab="upload"]').classList.add('active');
+            } else if (tab === 'files') {
+                document.getElementById('filesTab').classList.add('active');
+                document.querySelector('[data-tab="files"]').classList.add('active');
+            } else if (tab === 'preview') {
+                document.getElementById('previewTab').classList.add('active');
+                document.querySelector('[data-tab="preview"]').classList.add('active');
+            } else if (tab === 'pad') {
+                document.getElementById('padTab').classList.add('active');
+                document.querySelector('[data-tab="pad"]').classList.add('active');
+            } else if (tab === 'settings') {
+                document.getElementById('settingsTab').classList.add('active');
+                document.querySelector('[data-tab="settings"]').classList.add('active');
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function formatDate(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function loadFiles() {
+            try {
+                const authHeader = getAuthHeader();
+                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
+                const response = await fetch('/api/files', opts);
+                if (response.status === 401) return;
+                const files = await response.json();
+
+                const fileListDiv = document.getElementById('fileList');
+
+                if (files.length === 0) {
+                    fileListDiv.innerHTML = '<div class="empty-state">No files uploaded yet</div>';
+                    return;
+                }
+
+                fileListDiv.innerHTML = files.map(file => `
+                    <div class="file-item">
+                        <div class="file-info">
+                            <div class="file-name">${escapeHtml(file.name)}</div>
+                            <div class="file-meta">${formatBytes(file.size)} • ${formatDate(file.uploaded)}</div>
+                        </div>
+                        <div class="file-actions">
+                            <button data-action="preview" data-file-id="${escapeHtml(file.id)}" data-filename="${escapeHtml(file.name)}" data-mimetype="${escapeHtml(file.mimetype)}">Preview</button>
+                            <button data-action="download" data-file-id="${escapeHtml(file.id)}" data-filename="${escapeHtml(file.name)}">Download</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                document.getElementById('fileList').innerHTML =
+                    '<div class="empty-state">Error loading files</div>';
+            }
+        }
+
+        // Fetch a /download/ URL with auth, returning the Response.
+        function authDownload(fileId) {
+            const url = '/download/' + encodeURIComponent(fileId);
+            const authHeader = getAuthHeader();
+            const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
+            return fetch(url, opts);
+        }
+
+        function downloadFile(fileId) {
+            authDownload(fileId).then(resp => {
+                if (!resp.ok) return;
+                return resp.blob();
+            }).then(blob => {
+                if (!blob) return;
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = '';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(a.href);
+            });
+        }
+
+        async function previewFile(fileId, mimetype, displayName) {
+            const previewContent = document.getElementById('previewContent');
+            const previewFileName = document.getElementById('previewFileName');
+            const previewDownloadBtn = document.getElementById('previewDownloadBtn');
+
+            currentPreviewFileId = fileId;
+            currentPreviewFilename = displayName;
+            previewFileName.textContent = 'Preview: ' + displayName;
+            previewDownloadBtn.style.display = 'block';
+
+            try {
+                const resp = await authDownload(fileId);
+                if (!resp.ok) {
+                    previewContent.innerHTML = '<div class="empty-state">Error loading file preview</div>';
+                    switchTab('preview');
+                    return;
+                }
+
+                if (mimetype === 'application/pdf') {
+                    // PDF: pass ArrayBuffer to PDF.js
+                    const data = new Uint8Array(await resp.arrayBuffer());
+                    previewContent.innerHTML = `<canvas id="pdfCanvas" style="max-width: 100%; height: auto;"></canvas>
+                        <div style="margin-top: 10px; text-align: center;">
+                            <button data-action="pdf-prev" class="btn-secondary">Previous</button>
+                            <span style="margin: 0 15px;">Page <span id="pageNum"></span> / <span id="pageCount"></span></span>
+                            <button data-action="pdf-next" class="btn-secondary">Next</button>
+                        </div>`;
+                    renderPDF(data);
+                } else if (mimetype.startsWith('text/') || mimetype === 'application/json' || mimetype === 'application/javascript') {
+                    // Text preview
+                    const text = await resp.text();
+                    previewContent.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
+                } else {
+                    // Binary types: create blob URL for <img>, <video>, <audio>
+                    const blob = await resp.blob();
+                    const blobUrl = URL.createObjectURL(blob);
+
+                    if (mimetype.startsWith('image/')) {
+                        previewContent.innerHTML = `<img src="${blobUrl}" alt="${escapeHtml(displayName)}">`;
+                    } else if (mimetype.startsWith('video/')) {
+                        previewContent.innerHTML = `<video controls><source src="${blobUrl}" type="${mimetype}">Your browser does not support video playback.</video>`;
+                    } else if (mimetype.startsWith('audio/')) {
+                        previewContent.innerHTML = `<audio controls><source src="${blobUrl}" type="${mimetype}">Your browser does not support audio playback.</audio>`;
+                    } else {
+                        URL.revokeObjectURL(blobUrl);
+                        previewContent.innerHTML = `<div class="empty-state">Preview not available for this file type<br><small>${escapeHtml(mimetype)}</small></div>`;
+                    }
+                }
+            } catch (error) {
+                previewContent.innerHTML = '<div class="empty-state">Error loading file preview</div>';
+            }
+
+            switchTab('preview');
+        }
+
+        function downloadCurrentPreview() {
+            if (currentPreviewFileId) {
+                downloadFile(currentPreviewFileId);
+            }
+        }
+
+        function showStatus(message, isError = false) {
+            const statusDiv = document.getElementById('uploadStatus');
+            statusDiv.className = 'status ' + (isError ? 'error' : 'success');
+            statusDiv.textContent = message;
+            setTimeout(() => {
+                statusDiv.className = '';
+                statusDiv.textContent = '';
+            }, 5000);
+        }
+
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            const refreshBtn = document.getElementById('refreshBtn');
+
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(loadFiles, 1000);
+                refreshBtn.style.display = 'none';
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+                refreshBtn.style.display = 'inline-block';
+            }
+        }
+
+        // Upload form handler
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const authHeader = getAuthHeader();
+            if (!authHeader) {
+                showStatus('No credentials configured. Go to Settings tab to enter your credentials.', true);
+                return;
+            }
+
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                showStatus('Please select a file', true);
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Show progress bar
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            progressContainer.classList.add('active');
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+
+            try {
+                // Use XMLHttpRequest for progress tracking
+                const xhr = new XMLHttpRequest();
+
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = Math.round((e.loaded / e.total) * 100);
+                        progressBar.style.width = percentComplete + '%';
+                        progressBar.textContent = percentComplete + '%';
+                    }
+                });
+
+                xhr.addEventListener('load', () => {
+                    progressContainer.classList.remove('active');
+
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        const result = JSON.parse(xhr.responseText);
+                        showStatus('File uploaded successfully!');
+                        fileInput.value = '';
+                        loadFiles();
+                        // Switch to files tab after successful upload
+                        setTimeout(() => switchTab('files'), 500);
+                    } else {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            showStatus(result.error || 'Upload failed', true);
+                        } catch {
+                            showStatus('Upload failed', true);
+                        }
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    progressContainer.classList.remove('active');
+                    showStatus('Upload failed: Network error', true);
+                });
+
+                xhr.open('POST', '/api/upload');
+                xhr.setRequestHeader('Authorization', authHeader);
+                xhr.send(formData);
+
+            } catch (error) {
+                progressContainer.classList.remove('active');
+                showStatus('Upload failed: ' + error.message, true);
+            }
+        });
+
+        async function checkPreviewUpdate() {
+            try {
+                const authHeader = getAuthHeader();
+                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
+                const response = await fetch('/api/preview/current', opts);
+                if (response.status === 401) return;
+                const state = await response.json();
+
+                // If server timestamp is newer than our local timestamp, update preview
+                if (state.timestamp > localPreviewTimestamp && state.file_id) {
+                    localPreviewTimestamp = state.timestamp;
+
+                    // Load the preview and switch to preview tab
+                    previewFile(state.file_id, state.mimetype, state.filename);
+                }
+            } catch (error) {
+                // Silently fail - don't spam console with errors
+            }
+        }
+
+        // Pad functions
+        async function loadPadContent() {
+            try {
+                const authHeader = getAuthHeader();
+                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
+                const response = await fetch('/api/pad', opts);
+                if (response.status === 401) return;
+                const state = await response.json();
+
+                // Only update if server has newer content and we're not currently typing
+                if (state.timestamp > localPadTimestamp && !isUpdatingPad) {
+                    const padContent = document.getElementById('padContent');
+                    padContent.value = state.content;
+                    localPadTimestamp = state.timestamp;
+                    updatePadCharCount();
+                }
+            } catch (error) {
+                // Silently fail
+            }
+        }
+
+        async function savePadContent() {
+            const padContent = document.getElementById('padContent');
+            const padStatus = document.getElementById('padStatus');
+
+            const authHeader = getAuthHeader();
+            if (!authHeader) {
+                padStatus.textContent = 'No credentials configured. Go to Settings tab to enter your credentials.';
+                padStatus.style.color = 'var(--error-text)';
+                return;
+            }
+
+            try {
+                padStatus.textContent = 'Saving...';
+                padStatus.style.color = 'var(--text-secondary)';
+
+                const response = await fetch('/api/pad', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': authHeader,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ content: padContent.value })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    localPadTimestamp = result.timestamp;
+                    padStatus.textContent = 'Saved';
+                    padStatus.style.color = 'var(--success-text)';
+                    setTimeout(() => {
+                        padStatus.textContent = '';
+                    }, 2000);
+                } else {
+                    padStatus.textContent = 'Error: ' + (result.error || 'Save failed');
+                    padStatus.style.color = 'var(--error-text)';
+                }
+            } catch (error) {
+                padStatus.textContent = 'Network error';
+                padStatus.style.color = 'var(--error-text)';
+            }
+        }
+
+        function updatePadCharCount() {
+            const padContent = document.getElementById('padContent');
+            const padCharCount = document.getElementById('padCharCount');
+            padCharCount.textContent = padContent.value.length.toLocaleString();
+        }
+
+        function handlePadInput() {
+            isUpdatingPad = true;
+            updatePadCharCount();
+
+            // Clear existing timeout
+            if (padSaveTimeout) {
+                clearTimeout(padSaveTimeout);
+            }
+
+            // Set new timeout for 2 seconds
+            padSaveTimeout = setTimeout(() => {
+                isUpdatingPad = false;
+                savePadContent();
+            }, 2000);
+        }
+
+        // PDF.js rendering functions
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then(function(page) {
+                const canvas = document.getElementById('pdfCanvas');
+                const ctx = canvas.getContext('2d');
+                const viewport = page.getViewport({scale: 1.5});
+
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
+
+                const renderTask = page.render(renderContext);
+
+                renderTask.promise.then(function() {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                });
+            });
+
+            document.getElementById('pageNum').textContent = num;
+        }
+
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
+            }
+        }
+
+        function prevPage() {
+            if (pageNum <= 1) {
+                return;
+            }
+            pageNum--;
+            queueRenderPage(pageNum);
+        }
+
+        function nextPage() {
+            if (pageNum >= pdfDoc.numPages) {
+                return;
+            }
+            pageNum++;
+            queueRenderPage(pageNum);
+        }
+
+        function renderPDF(data) {
+            const loadingTask = pdfjsLib.getDocument({data: data});
+            loadingTask.promise.then(function(pdfDoc_) {
+                pdfDoc = pdfDoc_;
+                document.getElementById('pageCount').textContent = pdfDoc.numPages;
+
+                // Initial/first page rendering
+                pageNum = 1;
+                renderPage(pageNum);
+            }).catch(function(error) {
+                console.error('Error loading PDF:', error);
+                document.getElementById('previewContent').innerHTML =
+                    '<div class="empty-state">Error loading PDF. Try downloading the file instead.</div>';
+            });
+        }
+
+        // Event delegation for all button clicks
+        document.addEventListener('click', (e) => {
+            const target = e.target;
+
+            // Tab switching
+            if (target.classList.contains('nav-button') && target.dataset.tab) {
+                switchTab(target.dataset.tab);
+                return;
+            }
+
+            // File actions (preview/download)
+            if (target.dataset.action === 'preview') {
+                e.preventDefault();
+                previewFile(target.dataset.fileId, target.dataset.mimetype, target.dataset.filename);
+                return;
+            }
+
+            if (target.dataset.action === 'download') {
+                e.preventDefault();
+                downloadFile(target.dataset.fileId);
+                return;
+            }
+
+            // PDF navigation
+            if (target.dataset.action === 'pdf-prev') {
+                e.preventDefault();
+                prevPage();
+                return;
+            }
+
+            if (target.dataset.action === 'pdf-next') {
+                e.preventDefault();
+                nextPage();
+                return;
+            }
+
+            // Preview download button
+            if (target.id === 'previewDownloadBtn') {
+                e.preventDefault();
+                downloadCurrentPreview();
+                return;
+            }
+
+            // Refresh button
+            if (target.id === 'refreshBtn') {
+                e.preventDefault();
+                loadFiles();
+                return;
+            }
+        });
+
+        // Auto-refresh checkbox
+        document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
+
+        // Pad textarea input handler
+        document.getElementById('padContent').addEventListener('input', handlePadInput);
+
+        // Theme radio buttons
+        document.querySelectorAll('input[name="theme"]').forEach(r => {
+            r.addEventListener('change', (e) => setTheme(e.target.value));
+        });
+
+        // Credentials localStorage persistence
+        let storageGetFailed = false;
+        let storageSetFailed = false;
+        let storageToastShown = false;
+
+        function showStorageError(operation, error) {
+            if (!storageToastShown) {
+                storageToastShown = true;
+                document.getElementById('storageToast').classList.add('show');
+            }
+            if (operation === 'get' && !storageGetFailed) {
+                storageGetFailed = true;
+                console.error('Could not read credentials from browser storage:', error);
+            }
+            if (operation === 'set' && !storageSetFailed) {
+                storageSetFailed = true;
+                console.error('Could not save credentials to browser storage:', error);
+            }
+        }
+
+        function saveCredentials(clientId, clientSecret) {
+            try {
+                localStorage.setItem('companion_client_id', clientId);
+                localStorage.setItem('companion_client_secret', clientSecret);
+            } catch (e) {
+                showStorageError('set', e);
+            }
+        }
+
+        function loadCredentials() {
+            try {
+                return {
+                    clientId: localStorage.getItem('companion_client_id') || '',
+                    clientSecret: localStorage.getItem('companion_client_secret') || ''
+                };
+            } catch (e) {
+                showStorageError('get', e);
+                return { clientId: '', clientSecret: '' };
+            }
+        }
+
+        function getAuthHeader() {
+            const creds = loadCredentials();
+            if (creds.clientId && creds.clientSecret) {
+                return 'Bearer ' + creds.clientId + ':' + creds.clientSecret;
+            }
+            return '';
+        }
+
+        // Settings tab handlers
+        function showSettingsStatus(message, isError = false) {
+            const statusDiv = document.getElementById('settingsStatus');
+            statusDiv.className = 'status ' + (isError ? 'error' : 'success');
+            statusDiv.textContent = message;
+            setTimeout(() => {
+                statusDiv.className = '';
+                statusDiv.textContent = '';
+            }, 5000);
+        }
+
+        document.getElementById('saveCredsBtn').addEventListener('click', () => {
+            const clientId = document.getElementById('settingsClientId').value.trim();
+            const clientSecret = document.getElementById('settingsClientSecret').value.trim();
+
+            if (!clientId || !clientSecret) {
+                showSettingsStatus('Both Client ID and Client Secret are required', true);
+                return;
+            }
+
+            saveCredentials(clientId, clientSecret);
+            document.getElementById('settingsNoAuth').style.display = 'none';
+            showSettingsStatus('Credentials saved to browser storage');
+        });
+
+        // Load saved credentials into settings fields on page load
+        const savedCreds = loadCredentials();
+        if (savedCreds.clientId) {
+            document.getElementById('settingsNoAuth').style.display = 'none';
+            document.getElementById('settingsClientId').value = savedCreds.clientId;
+            document.getElementById('settingsClientSecret').value = savedCreds.clientSecret;
+        }
+
+        // Load files on page load
+        loadFiles();
+        // Start auto-refresh by default
+        toggleAutoRefresh();
+        // Start preview polling
+        setInterval(checkPreviewUpdate, 1000);
+        // Load pad content and start polling
+        loadPadContent();
+        setInterval(loadPadContent, 2000);
+    </script>
+</body>
+</html>
