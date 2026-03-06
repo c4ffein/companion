@@ -512,6 +512,10 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
           specifically to avoid collisions.
         - Filename is extracted by splitting on "filename=", not by parsing
           Content-Disposition per RFC 6266. Works for all browser/curl output.
+
+        Security:
+        - a malformed payload can only corrupt the attacker's own upload
+        - we sanitize anything that actually matters in the content of the request
         """
         # Extract boundary
         boundary = None
