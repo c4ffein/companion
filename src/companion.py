@@ -343,11 +343,6 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN)
         self.end_headers()
 
-    def _send_json(self, status, data):
-        """Send a JSON response."""
-        self._set_headers(status, "application/json")
-        self.wfile.write(json.dumps(data).encode())
-
     def _send_result(self, result):
         """Send a handler's result as the HTTP response. None means already handled."""
         if result is None:
@@ -357,6 +352,11 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             self._send_file(data)
         else:
             self._send_json(status, data)
+
+    def _send_json(self, status, data):
+        """Send a JSON response."""
+        self._set_headers(status, "application/json")
+        self.wfile.write(json.dumps(data).encode())
 
     def _send_file(self, entry):
         """Send a file response with appropriate headers."""
@@ -473,60 +473,33 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         if path == "/":
             self._serve_index()
         elif path == "/api/files":
-            result = self._serve_file_list()
-            if result is not None:
-                self._send_result(*result)
+            self._send_result(self._serve_file_list())
         elif path == "/api/preview/current":
-            result = self._serve_preview_state()
-            if result is not None:
-                self._send_result(*result)
+            self._send_result(self._serve_preview_state())
         elif path == "/api/pad":
-            result = self._serve_pad_content()
-            if result is not None:
-                self._send_result(*result)
+            self._send_result(self._serve_pad_content())
         elif path == "/api/clients":
-            result = self._handle_list_clients()
-            if result is not None:
-                self._send_result(*result)
+            self._send_result(self._handle_list_clients())
         elif path.startswith("/download/"):
             file_id = urllib.parse.unquote(path[10:])
-            result = self._serve_file(file_id)
-            if result is not None:
-                self._send_result(*result)
+            self._send_result(self._serve_file(file_id))
         else:
-            self._send_result(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
 
     def do_POST(self):
         """Handle POST requests (file uploads)"""
         if self.path == "/api/clients/register":
-            self._handle_register_client()
+            self._send_result(self._handle_register_client())
         elif self.path == "/api/preview/set":
-            self._handle_preview_set()
+            self._send_result(self._handle_preview_set())
         elif self.path == "/api/pad":
-            self._handle_pad_update()
+            self._send_result(self._handle_pad_update())
         elif self.path == "/api/upload":
-            client = self._require_auth()
-            if not client:
-                return
-            if not self._check_rate_limit(client["client_id"]):
-                return
-
-            body = self._read_body()
-            if body is None:
-                return
-
-            # Parse multipart form data manually (simple version)
-            content_type = self.headers.get("Content-Type", "")
-            if "multipart/form-data" in content_type:
-                self._handle_multipart_upload(body, content_type, client["client_id"])
-            else:
-                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(json.dumps({"error": "Expected multipart/form-data"}).encode())
+            self._send_result(self._handle_multipart_upload())
         else:
-            self._set_headers(HTTPStatus.NOT_FOUND)
-            self.wfile.write(b"Not found")
+            self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
 
-    def _handle_multipart_upload(self, body: bytes, content_type: str, client_id: str = ""):
+    def _handle_multipart_upload(self):
         """Parse multipart form data and store file.
 
         Simplified multipart parser — intentionally not a full RFC 2046 implementation.
@@ -553,6 +526,23 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         - a malformed payload can only corrupt the attacker's own upload
         - we sanitize anything that actually matters in the content of the request
         """
+        client = self._require_auth()
+        if not client:
+            return None
+        if not self._check_rate_limit(client["client_id"]):
+            return None
+
+        body = self._read_body()
+        if body is None:
+            return None
+
+        # Parse multipart form data manually (simple version)
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            return HTTPStatus.BAD_REQUEST, {"error": "Expected multipart/form-data"}
+
+        client_id = client["client_id"]
+
         # Extract boundary
         boundary = None
         for part in content_type.split(";"):
@@ -560,18 +550,14 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 raw = part.split("boundary=")[1].strip()
                 if '"' in raw:
                     if not raw.startswith('"') or not raw.endswith('"') or len(raw) < 2 or '"' in raw[1:-1]:
-                        self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                        self.wfile.write(json.dumps({"error": "Malformed boundary in Content-Type"}).encode())
-                        return
+                        return HTTPStatus.BAD_REQUEST, {"error": "Malformed boundary in Content-Type"}
                     boundary = raw[1:-1]
                 else:
                     boundary = raw
                 break
 
         if not boundary:
-            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-            self.wfile.write(json.dumps({"error": "No boundary found"}).encode())
-            return
+            return HTTPStatus.BAD_REQUEST, {"error": "No boundary found"}
 
         # Split by boundary
         parts = body.split(f"--{boundary}".encode())
@@ -611,27 +597,20 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                     with WORKSPACE_LOCK:
                         current_usage = sum(len(f.content) for f in FILES.values() if f.client_id == client_id)
                         if current_usage + len(content) > MAX_STORAGE_PER_CLIENT:
-                            self._set_headers(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json")
-                            self.wfile.write(json.dumps({"error": "Storage limit exceeded for this client"}).encode())
-                            return
+                            return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {
+                                "error": "Storage limit exceeded for this client"
+                            }
                         FILES[file_id] = FileEntry(filename, content, mimetype, upload_time, client_id)
 
-                    self._set_headers(HTTPStatus.OK, "application/json")
-                    self.wfile.write(
-                        json.dumps(
-                            {
-                                "success": True,
-                                "id": file_id,
-                                "filename": filename,
-                                "normalized_name": sanitize_filename(filename),
-                                "size": len(content),
-                            }
-                        ).encode()
-                    )
-                    return
+                    return HTTPStatus.OK, {
+                        "success": True,
+                        "id": file_id,
+                        "filename": filename,
+                        "normalized_name": sanitize_filename(filename),
+                        "size": len(content),
+                    }
 
-        self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-        self.wfile.write(json.dumps({"error": "No file found in upload"}).encode())
+        return HTTPStatus.BAD_REQUEST, {"error": "No file found in upload"}
 
     def _serve_index(self):
         """Serve the main HTML page"""
@@ -647,7 +626,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     def _serve_file_list(self):
         """Serve JSON list of available files"""
         if not self._require_auth():
-            return
+            return None
         with WORKSPACE_LOCK:
             files = [
                 {
@@ -662,38 +641,22 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 for file_id, entry in FILES.items()
             ]
 
-        self._set_headers(content_type="application/json")
-        self.wfile.write(json.dumps(files).encode())
+        return HTTPStatus.OK, files
 
     def _serve_file(self, file_id: str):
         """Serve a file for download or inline preview"""
         if not self._require_auth():
-            return
+            return None
         with WORKSPACE_LOCK:
-            if file_id not in FILES:
-                self._set_headers(HTTPStatus.NOT_FOUND)
-                self.wfile.write(b"File not found")
-                return
-
-            entry = FILES[file_id]
-
-        # Send headers manually (don't use _set_headers because we need additional headers)
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", entry.mimetype)
-        # Use inline for preview support (PDFs, images, etc.), but keep filename for downloads
-        # RFC 5987: normalized name for ASCII-safe filename=, original via filename*=UTF-8
-        safe_name = sanitize_filename(entry.filename)
-        utf8_name = urllib.parse.quote(entry.filename)
-        self.send_header("Content-Disposition", f"inline; filename=\"{safe_name}\"; filename*=UTF-8''{utf8_name}")
-        self.send_header("Content-Length", str(len(entry.content)))
-        self.send_header("Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN)
-        self.end_headers()
-        self.wfile.write(entry.content)
+            entry = FILES.get(file_id)
+        if not entry:
+            return HTTPStatus.NOT_FOUND, {"error": "File not found"}
+        return HTTPStatus.OK, entry
 
     def _serve_preview_state(self):
         """Serve current preview state"""
         if not self._require_auth():
-            return
+            return None
         with WORKSPACE_LOCK:
             state = PREVIEW_STATE.copy()
 
@@ -709,78 +672,61 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                     state["filename"] = None
                     state["mimetype"] = None
 
-        self._set_headers(content_type="application/json")
-        self.wfile.write(json.dumps(state).encode())
+        return HTTPStatus.OK, state
 
     def _handle_preview_set(self):
         """Handle setting the preview state"""
         client = self._require_auth()
         if not client:
-            return
+            return None
         if not self._check_rate_limit(client["client_id"]):
-            return
+            return None
 
         body = self._read_body()
         if body is None:
-            return
+            return None
 
         try:
             data = json.loads(body.decode())
             file_id = data.get("file_id")
 
             if not file_id:
-                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(json.dumps({"error": "file_id is required"}).encode())
-                return
+                return HTTPStatus.BAD_REQUEST, {"error": "file_id is required"}
 
             # Check file exists and update preview state atomically
             with WORKSPACE_LOCK:
                 if file_id not in FILES:
-                    self._set_headers(HTTPStatus.NOT_FOUND, "application/json")
-                    self.wfile.write(json.dumps({"error": "File not found"}).encode())
-                    return
+                    return HTTPStatus.NOT_FOUND, {"error": "File not found"}
                 filename = FILES[file_id].filename
                 PREVIEW_STATE["file_id"] = file_id
                 PREVIEW_STATE["timestamp"] = _next_timestamp(PREVIEW_STATE["timestamp"])
                 timestamp = PREVIEW_STATE["timestamp"]
 
-            self._set_headers(HTTPStatus.OK, "application/json")
-            self.wfile.write(
-                json.dumps(
-                    {
-                        "success": True,
-                        "file_id": file_id,
-                        "filename": filename,
-                        "timestamp": timestamp,
-                    }
-                ).encode()
-            )
+            return HTTPStatus.OK, {"success": True, "file_id": file_id, "filename": filename, "timestamp": timestamp}
 
         except (json.JSONDecodeError, KeyError):
-            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+            return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
     def _serve_pad_content(self):
         """Serve current pad content"""
         if not self._require_auth():
-            return
+            return None
         with WORKSPACE_LOCK:
             state = PAD_STATE.copy()
 
-        self._set_headers(content_type="application/json")
-        self.wfile.write(json.dumps(state).encode())
+        return HTTPStatus.OK, state
 
     def _handle_pad_update(self):
         """Handle updating the pad content"""
         client = self._require_auth()
         if not client:
-            return
+            return None
         if not self._check_rate_limit(client["client_id"]):
-            return
+            return None
 
         body = self._read_body(max_bytes=PAD_MAX_SIZE + 1024)
         if body is None:
-            return
+            return None
 
         try:
             data = json.loads(body.decode())
@@ -788,11 +734,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
             # Check size limit
             if len(content) > PAD_MAX_SIZE:
-                self._set_headers(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json")
-                self.wfile.write(
-                    json.dumps({"error": f"Content exceeds maximum size of {PAD_MAX_SIZE} bytes"}).encode()
-                )
-                return
+                return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {
+                    "error": f"Content exceeds maximum size of {PAD_MAX_SIZE} bytes"
+                }
 
             # Update pad state atomically
             with WORKSPACE_LOCK:
@@ -800,33 +744,23 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 PAD_STATE["timestamp"] = _next_timestamp(PAD_STATE["timestamp"])
                 timestamp = PAD_STATE["timestamp"]
 
-            self._set_headers(HTTPStatus.OK, "application/json")
-            self.wfile.write(
-                json.dumps(
-                    {
-                        "success": True,
-                        "timestamp": timestamp,
-                        "size": len(content),
-                    }
-                ).encode()
-            )
+            return HTTPStatus.OK, {"success": True, "timestamp": timestamp, "size": len(content)}
 
         except (json.JSONDecodeError, KeyError):
-            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+            return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
     def _handle_register_client(self):
         """Handle client registration. Always requires admin auth."""
         client = self._require_admin()
         if not client:
-            return
+            return None
         if not self._check_rate_limit(client["client_id"]):
-            return
+            return None
 
         # Registration payloads are small JSON; cap at 4KB.
         body = self._read_body(max_bytes=4096)
         if body is None:
-            return
+            return None
 
         try:
             data = json.loads(body.decode())
@@ -835,33 +769,25 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             name = data.get("name", "")
 
             if not client_id or not client_secret:
-                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(json.dumps({"error": "client_id and client_secret are required"}).encode())
-                return
+                return HTTPStatus.BAD_REQUEST, {"error": "client_id and client_secret are required"}
 
             # Validate client_id: 1-64 chars, alphanumeric + hyphens only
             VALID_CLIENT_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
             if len(client_id) > 64 or not client_id or not all(c in VALID_CLIENT_ID_CHARS for c in client_id):
-                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(
-                    json.dumps({"error": "client_id must be 1-64 characters, alphanumeric and hyphens only"}).encode()
-                )
-                return
+                return HTTPStatus.BAD_REQUEST, {
+                    "error": "client_id must be 1-64 characters, alphanumeric and hyphens only"
+                }
 
             # Validate name: 0-128 chars, printable ASCII (32-126) only  # TODO limit charset
             if len(name) > 128 or any(ord(c) < 32 or ord(c) > 126 for c in name):
-                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(json.dumps({"error": "name must be 0-128 printable ASCII characters"}).encode())
-                return
+                return HTTPStatus.BAD_REQUEST, {"error": "name must be 0-128 printable ASCII characters"}
 
             salt = secrets.token_hex(16)
             secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
             with CLIENTS_LOCK:
                 if client_id in CLIENTS:
-                    self._set_headers(HTTPStatus.CONFLICT, "application/json")
-                    self.wfile.write(json.dumps({"error": "client_id already exists"}).encode())
-                    return
+                    return HTTPStatus.CONFLICT, {"error": "client_id already exists"}
 
                 CLIENTS[client_id] = {
                     "salt": salt,
@@ -873,21 +799,10 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
             _save_clients_to_config()
 
-            self._set_headers(HTTPStatus.OK, "application/json")
-            self.wfile.write(
-                json.dumps(
-                    {
-                        "success": True,
-                        "client_id": client_id,
-                        "admin": False,
-                        "name": name,
-                    }
-                ).encode()
-            )
+            return HTTPStatus.OK, {"success": True, "client_id": client_id, "admin": False, "name": name}
 
         except (json.JSONDecodeError, KeyError):
-            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-            self.wfile.write(json.dumps({"error": "Invalid JSON"}).encode())
+            return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
     def do_DELETE(self):
         """Handle DELETE requests"""
@@ -897,13 +812,11 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         if path.startswith("/api/clients/"):
             target_client_id = urllib.parse.unquote(path[len("/api/clients/") :])
             if not target_client_id or "/" in target_client_id:
-                self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-                self.wfile.write(json.dumps({"error": "Invalid client ID"}).encode())
+                self._send_result((HTTPStatus.BAD_REQUEST, {"error": "Invalid client ID"}))
                 return
-            self._handle_delete_client(target_client_id)
+            self._send_result(self._handle_delete_client(target_client_id))
         else:
-            self._set_headers(HTTPStatus.NOT_FOUND)
-            self.wfile.write(b"Not found")
+            self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
@@ -917,29 +830,24 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Handle deleting a registered client (admin only, no self-deletion)."""
         client = self._require_admin()
         if not client:
-            return
+            return None
 
         if client["client_id"] == target_client_id:
-            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-            self.wfile.write(json.dumps({"error": "Cannot delete yourself"}).encode())
-            return
+            return HTTPStatus.BAD_REQUEST, {"error": "Cannot delete yourself"}
 
         with CLIENTS_LOCK:
             if target_client_id not in CLIENTS:
-                self._set_headers(HTTPStatus.NOT_FOUND, "application/json")
-                self.wfile.write(json.dumps({"error": "Client not found"}).encode())
-                return
+                return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
             del CLIENTS[target_client_id]
 
         _save_clients_to_config()
 
-        self._set_headers(HTTPStatus.OK, "application/json")
-        self.wfile.write(json.dumps({"success": True, "deleted": target_client_id}).encode())
+        return HTTPStatus.OK, {"success": True, "deleted": target_client_id}
 
     def _handle_list_clients(self):
         """Handle listing registered clients (admin only, secrets excluded)"""
         if not self._require_admin():
-            return
+            return None
 
         with CLIENTS_LOCK:
             clients_list = [
@@ -952,8 +860,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 for cid, info in CLIENTS.items()
             ]
 
-        self._set_headers(HTTPStatus.OK, "application/json")
-        self.wfile.write(json.dumps(clients_list).encode())
+        return HTTPStatus.OK, clients_list
 
     def log_message(self, format, *args):
         """Override to customize logging"""
