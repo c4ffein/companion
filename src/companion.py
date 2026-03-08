@@ -23,6 +23,8 @@ Config file (~/.config/companion/config.json):
 
 import argparse
 import contextlib
+import enum
+import functools
 import hashlib
 import hmac
 import http.server
@@ -334,6 +336,54 @@ def resolve_server_config(args) -> int:
     return port
 
 
+class Auth(enum.Enum):
+    NONE = "none"
+    REGULAR = "regular"
+    ADMIN = "admin"
+
+
+def _route(auth=Auth.REGULAR, rate_limit=False, parse_body=False, max_body=None):
+    """Decorator for route handlers. Handles auth, rate limiting, and body reading.
+
+    The decorated function receives (self, client, body) where:
+    - client is the authenticated client dict (None if auth=Auth.NONE)
+    - body is the raw request bytes (None if parse_body=False)
+    """
+
+    def decorator(fn):
+        if rate_limit and auth == Auth.NONE:
+            raise ValueError(f"rate_limit requires authentication, but auth=Auth.NONE on {fn.__name__}")
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            # Authenticate
+            client = None
+            if auth != Auth.NONE:
+                client = self._authenticate()
+                if not client:
+                    return self._AUTH_FAILED
+                if auth == Auth.ADMIN and not client.get("admin"):
+                    return self._ADMIN_REQUIRED
+
+            # Rate limit
+            if rate_limit:
+                if not self._check_rate_limit(client["client_id"]):
+                    return self._RATE_LIMITED
+
+            # Read body
+            request_body = None
+            if parse_body:
+                request_body = self._read_body(max_bytes=max_body or MAX_REQUEST_BODY)
+                if request_body is None:
+                    return None
+
+            return fn(self, *args, client=client, body=request_body, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 class FileShareHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler for file sharing server"""
 
@@ -407,22 +457,6 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     _ADMIN_REQUIRED = (HTTPStatus.FORBIDDEN, {"error": "Admin access required"})
     _RATE_LIMITED = (HTTPStatus.TOO_MANY_REQUESTS, {"error": "Rate limit exceeded"})
 
-    def _require_auth(self):
-        """Authenticate. Returns (error_tuple, None) or (None, client_dict)."""
-        client = self._authenticate()
-        if not client:
-            return self._AUTH_FAILED, None
-        return None, client
-
-    def _require_admin(self):
-        """Authenticate + require admin. Returns (error_tuple, None) or (None, client_dict)."""
-        client = self._authenticate()
-        if not client:
-            return self._AUTH_FAILED, None
-        if not client.get("admin"):
-            return self._ADMIN_REQUIRED, None
-        return None, client
-
     def _check_rate_limit(self, client_id: str) -> bool:
         """Per-client sliding window rate limit. Returns True if allowed, False if not."""
         now = time.monotonic()
@@ -495,7 +529,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         else:
             self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
 
-    def _handle_multipart_upload(self):
+    @_route(auth=Auth.REGULAR, rate_limit=True, parse_body=True)
+    def _handle_multipart_upload(self, client=None, body=None):
         """Parse multipart form data and store file.
 
         Simplified multipart parser — intentionally not a full RFC 2046 implementation.
@@ -522,16 +557,6 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         - a malformed payload can only corrupt the attacker's own upload
         - we sanitize anything that actually matters in the content of the request
         """
-        error, client = self._require_auth()
-        if error:
-            return error
-        if not self._check_rate_limit(client["client_id"]):
-            return self._RATE_LIMITED
-
-        body = self._read_body()
-        if body is None:
-            return None
-
         # Parse multipart form data manually (simple version)
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type:
@@ -619,11 +644,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self._set_headers()
         self.wfile.write(html.encode())
 
-    def _serve_file_list(self):
+    @_route(auth=Auth.REGULAR)
+    def _serve_file_list(self, client=None, body=None):
         """Serve JSON list of available files"""
-        error, client = self._require_auth()
-        if error:
-            return error
         with WORKSPACE_LOCK:
             files = [
                 {
@@ -640,22 +663,18 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, files
 
-    def _serve_file(self, file_id: str):
+    @_route(auth=Auth.REGULAR)
+    def _serve_file(self, file_id: str, client=None, body=None):
         """Serve a file for download or inline preview"""
-        error, client = self._require_auth()
-        if error:
-            return error
         with WORKSPACE_LOCK:
             entry = FILES.get(file_id)
         if not entry:
             return HTTPStatus.NOT_FOUND, {"error": "File not found"}
         return HTTPStatus.OK, entry
 
-    def _serve_preview_state(self):
+    @_route(auth=Auth.REGULAR)
+    def _serve_preview_state(self, client=None, body=None):
         """Serve current preview state"""
-        error, client = self._require_auth()
-        if error:
-            return error
         with WORKSPACE_LOCK:
             state = PREVIEW_STATE.copy()
 
@@ -673,18 +692,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, state
 
-    def _handle_preview_set(self):
+    @_route(auth=Auth.REGULAR, rate_limit=True, parse_body=True)
+    def _handle_preview_set(self, client=None, body=None):
         """Handle setting the preview state"""
-        error, client = self._require_auth()
-        if error:
-            return error
-        if not self._check_rate_limit(client["client_id"]):
-            return self._RATE_LIMITED
-
-        body = self._read_body()
-        if body is None:
-            return None
-
         try:
             data = json.loads(body.decode())
             file_id = data.get("file_id")
@@ -706,28 +716,17 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
-    def _serve_pad_content(self):
+    @_route(auth=Auth.REGULAR)
+    def _serve_pad_content(self, client=None, body=None):
         """Serve current pad content"""
-        error, client = self._require_auth()
-        if error:
-            return error
         with WORKSPACE_LOCK:
             state = PAD_STATE.copy()
 
         return HTTPStatus.OK, state
 
-    def _handle_pad_update(self):
+    @_route(auth=Auth.REGULAR, rate_limit=True, parse_body=True, max_body=PAD_MAX_SIZE + 1024)
+    def _handle_pad_update(self, client=None, body=None):
         """Handle updating the pad content"""
-        error, client = self._require_auth()
-        if error:
-            return error
-        if not self._check_rate_limit(client["client_id"]):
-            return self._RATE_LIMITED
-
-        body = self._read_body(max_bytes=PAD_MAX_SIZE + 1024)
-        if body is None:
-            return None
-
         try:
             data = json.loads(body.decode())
             content = data.get("content", "")
@@ -749,19 +748,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
-    def _handle_register_client(self):
+    @_route(auth=Auth.ADMIN, rate_limit=True, parse_body=True, max_body=4096)
+    def _handle_register_client(self, client=None, body=None):
         """Handle client registration. Always requires admin auth."""
-        error, client = self._require_admin()
-        if error:
-            return error
-        if not self._check_rate_limit(client["client_id"]):
-            return self._RATE_LIMITED
-
-        # Registration payloads are small JSON; cap at 4KB.
-        body = self._read_body(max_bytes=4096)
-        if body is None:
-            return None
-
         try:
             data = json.loads(body.decode())
             client_id = data.get("client_id")
@@ -826,11 +815,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
 
-    def _handle_delete_client(self, target_client_id: str):
+    @_route(auth=Auth.ADMIN)
+    def _handle_delete_client(self, target_client_id: str, client=None, body=None):
         """Handle deleting a registered client (admin only, no self-deletion)."""
-        error, client = self._require_admin()
-        if error:
-            return error
 
         if client["client_id"] == target_client_id:
             return HTTPStatus.BAD_REQUEST, {"error": "Cannot delete yourself"}
@@ -844,12 +831,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, {"success": True, "deleted": target_client_id}
 
-    def _handle_list_clients(self):
+    @_route(auth=Auth.ADMIN)
+    def _handle_list_clients(self, client=None, body=None):
         """Handle listing registered clients (admin only, secrets excluded)"""
-        error, client = self._require_admin()
-        if error:
-            return error
-
         with CLIENTS_LOCK:
             clients_list = [
                 {
