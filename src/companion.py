@@ -892,8 +892,8 @@ def run_server(port: int):
 
     server_address = ("0.0.0.0", port)
 
-    class FastHTTPServer(http.server.HTTPServer):
-        """HTTPServer that skips slow getfqdn() call during binding and ensures socket reuse"""
+    class FastHTTPServer(http.server.ThreadingHTTPServer):
+        """ThreadingHTTPServer that skips slow getfqdn() call during binding and ensures socket reuse"""
 
         allow_reuse_address = True  # Enable SO_REUSEADDR for instant socket reuse
 
