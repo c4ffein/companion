@@ -4,8 +4,7 @@
     <title>Companion</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- PDF.js CDN - will be inlined in build -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs" type="module"></script>
+    <link rel="modulepreload" href="/deps/pdf.min.mjs">
     <style>
         [data-theme="light"] {
             --bg-body: #f5f5f5; --bg-card: #ffffff; --bg-input: #ffffff; --bg-code: #f5f5f5; --bg-hover: #f5f5f5;
@@ -194,8 +193,8 @@
 
     <script type="module">
         // PDF.js setup
-        import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.min.mjs';
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.4.149/pdf.worker.min.mjs';
+        import * as pdfjsLib from '/deps/pdf.min.mjs';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '/deps/pdf.worker.min.mjs';
 
         // Theme functions
         function setTheme(theme) {

@@ -61,6 +61,31 @@ else:
         fcntl.flock(fd, fcntl.LOCK_EX)
 
 
+# Static assets: empty in source, loaded by _load_assets() at server start,
+# or filled directly by build.py in the built version.
+_INDEX_HTML = ""
+_PDFJS_LIB = b""
+_PDFJS_WORKER = b""
+
+
+def _load_assets():
+    """Load static assets from files (dev only — removed by build.py)."""
+    global _INDEX_HTML, _PDFJS_LIB, _PDFJS_WORKER
+    base = os.path.dirname(os.path.abspath(__file__))
+    for name, path in [
+        ("index.html", os.path.join(base, "index.html")),
+        ("pdf.min.mjs", os.path.join(base, "..", "js_deps", "pdf.min.mjs")),
+        ("pdf.worker.min.mjs", os.path.join(base, "..", "js_deps", "pdf.worker.min.mjs")),
+    ]:
+        logger.debug("Loading unbundled asset: %s", path)
+    with open(os.path.join(base, "index.html"), "r", encoding="utf-8") as f:
+        _INDEX_HTML = f.read()
+    with open(os.path.join(base, "..", "js_deps", "pdf.min.mjs"), "rb") as f:
+        _PDFJS_LIB = f.read()
+    with open(os.path.join(base, "..", "js_deps", "pdf.worker.min.mjs"), "rb") as f:
+        _PDFJS_WORKER = f.read()
+
+
 @dataclass
 class FileEntry:
     filename: str
@@ -511,6 +536,8 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
     def _dispatch(self):
         """Match request to a registered @_route handler and send the result."""
+        if not _INDEX_HTML:
+            _load_assets()
         request_method = self.command
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -639,10 +666,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     @_route("GET", "/", auth=Auth.NONE)
     def _serve_index(self, client=None, body=None):
         """Serve the main HTML page"""
-        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-        with open(html_path, "r", encoding="utf-8") as f:
-            html = f.read()
-        return HTTPStatus.OK, html
+        return HTTPStatus.OK, _INDEX_HTML
 
     @_route("GET", "/api/files", auth=Auth.REGULAR)
     def _serve_file_list(self, client=None, body=None):
@@ -832,6 +856,28 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             ]
 
         return HTTPStatus.OK, clients_list
+
+    @_route("GET", "/deps/pdf.min.mjs", auth=Auth.NONE)
+    def _serve_pdfjs_lib(self, client=None, body=None):
+        """Serve PDF.js library"""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(_PDFJS_LIB)))
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.end_headers()
+        self.wfile.write(_PDFJS_LIB)
+        return None
+
+    @_route("GET", "/deps/pdf.worker.min.mjs", auth=Auth.NONE)
+    def _serve_pdfjs_worker(self, client=None, body=None):
+        """Serve PDF.js worker"""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(_PDFJS_WORKER)))
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.end_headers()
+        self.wfile.write(_PDFJS_WORKER)
+        return None
 
     def log_message(self, format, *args):
         """Override to customize logging"""
