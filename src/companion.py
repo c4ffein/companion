@@ -517,18 +517,17 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         """Read request body up to *max_bytes*.  Sends 411/413/400 on error and returns None."""
         raw = self.headers.get("Content-Length")
         if raw is None:
-            self._set_headers(HTTPStatus.LENGTH_REQUIRED, "application/json")
-            self.wfile.write(json.dumps({"error": "Content-Length header is required"}).encode())
+            self._send_json(HTTPStatus.LENGTH_REQUIRED, {"error": "Content-Length header is required"})
             return None
         try:
             length = int(raw)
         except (ValueError, TypeError):
-            self._set_headers(HTTPStatus.BAD_REQUEST, "application/json")
-            self.wfile.write(json.dumps({"error": "Invalid Content-Length"}).encode())
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid Content-Length"})
             return None
         if length < 0 or length > max_bytes:
-            self._set_headers(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "application/json")
-            self.wfile.write(json.dumps({"error": f"Request body too large (max {max_bytes} bytes)"}).encode())
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": f"Request body too large (max {max_bytes} bytes)"}
+            )
             return None
         return self.rfile.read(length)
 
