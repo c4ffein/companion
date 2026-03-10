@@ -55,11 +55,8 @@ def build_companion():
     # Replace the file-loading block with the inline HTML string
     html_loading_block = (
         '        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")\n'
-        "        try:\n"
-        '            with open(html_path, "r", encoding="utf-8") as f:\n'
-        "                html = f.read()\n"
-        "        except FileNotFoundError:\n"
-        '            raise FileNotFoundError(f"index.html not found at {html_path}")'
+        '        with open(html_path, "r", encoding="utf-8") as f:\n'
+        "            html = f.read()"
     )
     html_inline = f'        html = """{html_content}"""'
     if html_loading_block not in source:
@@ -119,48 +116,47 @@ _PDFJS_WORKER = "{pdf_worker_b64}";
         "/deps/pdf.worker.min.mjs",
     )
 
-    # Add /deps/ routes to the HTTP handler
-    # Find the do_GET method and add routes there
-    deps_handler = """        # Serve embedded PDF.js dependencies (built version only)
-        if self.path == "/deps/pdf.min.mjs":
-            if "_PDFJS_LIB" in globals():
-                import base64
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/javascript; charset=utf-8")
-                # Decode base64 to get original content
-                content_bytes = base64.b64decode(_PDFJS_LIB.rstrip(';').strip('"'))
-                self.send_header("Content-Length", str(len(content_bytes)))
-                self.send_header("Cache-Control", "public, max-age=31536000")  # Cache for 1 year
-                self.end_headers()
-                self.wfile.write(content_bytes)
-            else:
-                self.send_error(HTTPStatus.NOT_FOUND)
-            return
+    # Add /deps/ routes for serving embedded PDF.js dependencies
+    deps_routes = """
+    @_route("GET", "/deps/pdf.min.mjs", auth=Auth.NONE)
+    def _serve_pdfjs_lib(self, client=None, body=None):
+        \"\"\"Serve embedded PDF.js library (built version only)\"\"\"
+        if "_PDFJS_LIB" not in globals():
+            return HTTPStatus.NOT_FOUND, {"error": "Not found"}
+        import base64
+        content_bytes = base64.b64decode(_PDFJS_LIB.rstrip(';').strip('"'))
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(content_bytes)))
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.end_headers()
+        self.wfile.write(content_bytes)
+        return None
 
-        if self.path == "/deps/pdf.worker.min.mjs":
-            if "_PDFJS_WORKER" in globals():
-                import base64
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/javascript; charset=utf-8")
-                # Decode base64 to get original content
-                content_bytes = base64.b64decode(_PDFJS_WORKER.rstrip(';').strip('"'))
-                self.send_header("Content-Length", str(len(content_bytes)))
-                self.send_header("Cache-Control", "public, max-age=31536000")  # Cache for 1 year
-                self.end_headers()
-                self.wfile.write(content_bytes)
-            else:
-                self.send_error(HTTPStatus.NOT_FOUND)
-            return
+    @_route("GET", "/deps/pdf.worker.min.mjs", auth=Auth.NONE)
+    def _serve_pdfjs_worker(self, client=None, body=None):
+        \"\"\"Serve embedded PDF.js worker (built version only)\"\"\"
+        if "_PDFJS_WORKER" not in globals():
+            return HTTPStatus.NOT_FOUND, {"error": "Not found"}
+        import base64
+        content_bytes = base64.b64decode(_PDFJS_WORKER.rstrip(';').strip('"'))
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(content_bytes)))
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.end_headers()
+        self.wfile.write(content_bytes)
+        return None
 
 """
 
-    # Insert deps routes at the beginning of do_GET method (after the docstring if any)
-    do_get_marker = '    def do_GET(self):\n        """Handle GET requests"""\n'
-    if do_get_marker not in source:
-        print("❌ ERROR: Could not find do_GET method in source.")
+    # Insert deps routes before the log_message method
+    log_message_marker = "    def log_message(self, format, *args):\n"
+    if log_message_marker not in source:
+        print("❌ ERROR: Could not find log_message method in source.")
         print("   The source file may have been modified. Please update build.py.")
         exit(1)
-    source = source.replace(do_get_marker, f"{do_get_marker}{deps_handler}")
+    source = source.replace(log_message_marker, f"{deps_routes}{log_message_marker}")
 
     # Update docstring to mark as built version
     print("\n📝 Adding built version marker to docstring...")

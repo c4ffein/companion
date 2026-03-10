@@ -26,6 +26,7 @@ import contextlib
 import enum
 import functools
 import hashlib
+import re
 import hmac
 import http.server
 import io
@@ -342,20 +343,27 @@ class Auth(enum.Enum):
     ADMIN = "admin"
 
 
-def _route(auth=Auth.REGULAR, rate_limit=False, parse_body=False, max_body=None):
-    """Decorator for route handlers. Handles auth, rate limiting, and body reading.
+_ROUTES = []  # [(http_method, path_regex, param_names, handler)]
 
-    The decorated function receives (self, client, body) where:
-    - client is the authenticated client dict (None if auth=Auth.NONE)
-    - body is the raw request bytes (None if parse_body=False)
+
+def _route(method, path, auth=Auth.REGULAR, rate_limit=False, parse_body=False, max_body=None):
+    """Decorator for route handlers. Registers the route and handles auth, rate limiting, body reading.
+
+    Path patterns use {name} for parameters, e.g. "/download/{file_id}".
+    The decorated function receives keyword arguments: client, body, and any path params.
     """
+
+    # Compile path pattern to regex: "/download/{file_id}" -> r"^/download/(?P<file_id>[A-Za-z0-9-]+)$"
+    param_names = re.findall(r"\{(\w+)\}", path)
+    pattern = "^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[A-Za-z0-9-]+)", path) + "$"
+    path_regex = re.compile(pattern)
 
     def decorator(fn):
         if rate_limit and auth == Auth.NONE:
             raise ValueError(f"rate_limit requires authentication, but auth=Auth.NONE on {fn.__name__}")
 
         @functools.wraps(fn)
-        def wrapper(self, *args, **kwargs):
+        def wrapper(self, **kwargs):
             # Authenticate
             client = None
             if auth != Auth.NONE:
@@ -377,8 +385,9 @@ def _route(auth=Auth.REGULAR, rate_limit=False, parse_body=False, max_body=None)
                 if request_body is None:
                     return None
 
-            return fn(self, *args, client=client, body=request_body, **kwargs)
+            return fn(self, client=client, body=request_body, **kwargs)
 
+        _ROUTES.append((method, path_regex, param_names, wrapper))
         return wrapper
 
     return decorator
@@ -400,6 +409,9 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         status, data = result
         if isinstance(data, FileEntry):
             self._send_file(data)
+        elif isinstance(data, str):
+            self._set_headers(status)
+            self.wfile.write(data.encode())
         else:
             self._send_json(status, data)
 
@@ -495,41 +507,32 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return None
         return self.rfile.read(length)
 
-    def do_GET(self):
-        """Handle GET requests"""
+    _VALID_PATH_PARAM_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-")
+
+    def _dispatch(self):
+        """Match request to a registered @_route handler and send the result."""
+        request_method = self.command
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        for http_method, path_regex, param_names, handler in _ROUTES:
+            if http_method != request_method:
+                continue
+            m = path_regex.match(path)
+            if m:
+                params = {name: urllib.parse.unquote(m.group(name)) for name in param_names}
+                # dual validation of decoded params against allowed charset - should actually never be triggered
+                if any(not all(c in self._VALID_PATH_PARAM_CHARS for c in v) for v in params.values()):
+                    self._send_result((HTTPStatus.BAD_REQUEST, {"error": "Invalid path parameter"}))
+                    return
+                self._send_result(handler(self, **params))
+                return
+        self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
 
-        if path == "/":
-            self._serve_index()
-        elif path == "/api/files":
-            self._send_result(self._serve_file_list())
-        elif path == "/api/preview/current":
-            self._send_result(self._serve_preview_state())
-        elif path == "/api/pad":
-            self._send_result(self._serve_pad_content())
-        elif path == "/api/clients":
-            self._send_result(self._handle_list_clients())
-        elif path.startswith("/download/"):
-            file_id = urllib.parse.unquote(path[10:])
-            self._send_result(self._serve_file(file_id))
-        else:
-            self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
+    do_GET = _dispatch
+    do_POST = _dispatch
+    do_DELETE = _dispatch
 
-    def do_POST(self):
-        """Handle POST requests (file uploads)"""
-        if self.path == "/api/clients/register":
-            self._send_result(self._handle_register_client())
-        elif self.path == "/api/preview/set":
-            self._send_result(self._handle_preview_set())
-        elif self.path == "/api/pad":
-            self._send_result(self._handle_pad_update())
-        elif self.path == "/api/upload":
-            self._send_result(self._handle_multipart_upload())
-        else:
-            self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
-
-    @_route(auth=Auth.REGULAR, rate_limit=True, parse_body=True)
+    @_route("POST", "/api/upload", auth=Auth.REGULAR, rate_limit=True, parse_body=True)
     def _handle_multipart_upload(self, client=None, body=None):
         """Parse multipart form data and store file.
 
@@ -633,18 +636,15 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.BAD_REQUEST, {"error": "No file found in upload"}
 
-    def _serve_index(self):
+    @_route("GET", "/", auth=Auth.NONE)
+    def _serve_index(self, client=None, body=None):
         """Serve the main HTML page"""
         html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
-        try:
-            with open(html_path, "r", encoding="utf-8") as f:
-                html = f.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"index.html not found at {html_path}")
-        self._set_headers()
-        self.wfile.write(html.encode())
+        with open(html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        return HTTPStatus.OK, html
 
-    @_route(auth=Auth.REGULAR)
+    @_route("GET", "/api/files", auth=Auth.REGULAR)
     def _serve_file_list(self, client=None, body=None):
         """Serve JSON list of available files"""
         with WORKSPACE_LOCK:
@@ -663,7 +663,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, files
 
-    @_route(auth=Auth.REGULAR)
+    @_route("GET", "/download/{file_id}", auth=Auth.REGULAR)
     def _serve_file(self, file_id: str, client=None, body=None):
         """Serve a file for download or inline preview"""
         with WORKSPACE_LOCK:
@@ -672,7 +672,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return HTTPStatus.NOT_FOUND, {"error": "File not found"}
         return HTTPStatus.OK, entry
 
-    @_route(auth=Auth.REGULAR)
+    @_route("GET", "/api/preview/current", auth=Auth.REGULAR)
     def _serve_preview_state(self, client=None, body=None):
         """Serve current preview state"""
         with WORKSPACE_LOCK:
@@ -692,7 +692,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, state
 
-    @_route(auth=Auth.REGULAR, rate_limit=True, parse_body=True)
+    @_route("POST", "/api/preview/set", auth=Auth.REGULAR, rate_limit=True, parse_body=True)
     def _handle_preview_set(self, client=None, body=None):
         """Handle setting the preview state"""
         try:
@@ -716,7 +716,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
-    @_route(auth=Auth.REGULAR)
+    @_route("GET", "/api/pad", auth=Auth.REGULAR)
     def _serve_pad_content(self, client=None, body=None):
         """Serve current pad content"""
         with WORKSPACE_LOCK:
@@ -724,7 +724,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, state
 
-    @_route(auth=Auth.REGULAR, rate_limit=True, parse_body=True, max_body=PAD_MAX_SIZE + 1024)
+    @_route("POST", "/api/pad", auth=Auth.REGULAR, rate_limit=True, parse_body=True, max_body=PAD_MAX_SIZE + 1024)
     def _handle_pad_update(self, client=None, body=None):
         """Handle updating the pad content"""
         try:
@@ -748,7 +748,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
-    @_route(auth=Auth.ADMIN, rate_limit=True, parse_body=True, max_body=4096)
+    @_route("POST", "/api/clients/register", auth=Auth.ADMIN, rate_limit=True, parse_body=True, max_body=4096)
     def _handle_register_client(self, client=None, body=None):
         """Handle client registration. Always requires admin auth."""
         try:
@@ -793,20 +793,6 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
 
-    def do_DELETE(self):
-        """Handle DELETE requests"""
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        if path.startswith("/api/clients/"):
-            target_client_id = urllib.parse.unquote(path[len("/api/clients/") :])
-            if not target_client_id or "/" in target_client_id:
-                self._send_result((HTTPStatus.BAD_REQUEST, {"error": "Invalid client ID"}))
-                return
-            self._send_result(self._handle_delete_client(target_client_id))
-        else:
-            self._send_result((HTTPStatus.NOT_FOUND, {"error": "Not found"}))
-
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -815,7 +801,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
 
-    @_route(auth=Auth.ADMIN)
+    @_route("DELETE", "/api/clients/{target_client_id}", auth=Auth.ADMIN)
     def _handle_delete_client(self, target_client_id: str, client=None, body=None):
         """Handle deleting a registered client (admin only, no self-deletion)."""
 
@@ -831,7 +817,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         return HTTPStatus.OK, {"success": True, "deleted": target_client_id}
 
-    @_route(auth=Auth.ADMIN)
+    @_route("GET", "/api/clients", auth=Auth.ADMIN)
     def _handle_list_clients(self, client=None, body=None):
         """Handle listing registered clients (admin only, secrets excluded)"""
         with CLIENTS_LOCK:
