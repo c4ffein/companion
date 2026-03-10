@@ -72,17 +72,20 @@ def _load_assets():
     """Load static assets from files (dev only — removed by build.py)."""
     global _INDEX_HTML, _PDFJS_LIB, _PDFJS_WORKER
     base = os.path.dirname(os.path.abspath(__file__))
-    for name, path in [
-        ("index.html", os.path.join(base, "index.html")),
-        ("pdf.min.mjs", os.path.join(base, "..", "js_deps", "pdf.min.mjs")),
-        ("pdf.worker.min.mjs", os.path.join(base, "..", "js_deps", "pdf.worker.min.mjs")),
-    ]:
-        logger.debug("Loading unbundled asset: %s", path)
-    with open(os.path.join(base, "index.html"), "r", encoding="utf-8") as f:
+    js = os.path.join(base, "..", "js_deps")
+    paths = {
+        "index.html": os.path.join(base, "index.html"),
+        "pdf.min.mjs": os.path.join(js, "pdf.min.mjs"),
+        "pdf.worker.min.mjs": os.path.join(js, "pdf.worker.min.mjs"),
+    }
+    logger.debug("Loading unbundled asset: %s", paths["index.html"])
+    with open(paths["index.html"], "r", encoding="utf-8") as f:
         _INDEX_HTML = f.read()
-    with open(os.path.join(base, "..", "js_deps", "pdf.min.mjs"), "rb") as f:
+    logger.debug("Loading unbundled asset: %s", paths["pdf.min.mjs"])
+    with open(paths["pdf.min.mjs"], "rb") as f:
         _PDFJS_LIB = f.read()
-    with open(os.path.join(base, "..", "js_deps", "pdf.worker.min.mjs"), "rb") as f:
+    logger.debug("Loading unbundled asset: %s", paths["pdf.worker.min.mjs"])
+    with open(paths["pdf.worker.min.mjs"], "rb") as f:
         _PDFJS_WORKER = f.read()
 
 
