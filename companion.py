@@ -1600,8 +1600,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                 return HTTPStatus.BAD_REQUEST, {"error": "client_id and client_secret are required"}
 
             # Validate client_id: 1-64 chars, alphanumeric + hyphens only
-            VALID_CLIENT_ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
-            if len(client_id) > 64 or not client_id or not all(c in VALID_CLIENT_ID_CHARS for c in client_id):
+            if len(client_id) > 64 or not client_id or not all(c in self._VALID_ID_CHARS for c in client_id):
                 return HTTPStatus.BAD_REQUEST, {
                     "error": "client_id must be 1-64 characters, alphanumeric and hyphens only"
                 }
