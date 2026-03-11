@@ -950,6 +950,9 @@ RATE_LIMIT_STORE: Dict[str, List[float]] = {}
 RATE_LIMIT_LOCK = Lock()
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX = int(os.environ.get("COMPANION_RATE_LIMIT_MAX", "30"))
+RATE_LIMIT_MAX_CLIENTS_BEFORE_CLIENT_EVICTION_CLEANUP = int(
+    os.environ.get("COMPANION_RATE_LIMIT_MAX_CLIENTS_BEFORE_CLIENT_EVICTION_CLEANUP", "1000")
+)
 
 # Config file path
 CONFIG_PATH = Path.home() / ".config" / "companion" / "config.json"
@@ -1318,7 +1321,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         now = time.monotonic()
         with RATE_LIMIT_LOCK:
             # Cleanup when store gets large
-            if len(RATE_LIMIT_STORE) > 1000:  # TODO parameterize and calculate good sweet-spot
+            if len(RATE_LIMIT_STORE) > RATE_LIMIT_MAX_CLIENTS_BEFORE_CLIENT_EVICTION_CLEANUP:
                 cutoff = now - RATE_LIMIT_WINDOW
                 to_delete = [k for k, v in RATE_LIMIT_STORE.items() if not v or v[-1] < cutoff]
                 for k in to_delete:
