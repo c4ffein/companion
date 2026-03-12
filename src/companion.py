@@ -158,6 +158,11 @@ def load_config() -> Optional[dict]:
     return None
 
 
+class ConfigWriteError(Exception):
+    """Raised when the config file cannot be persisted to disk."""
+
+
+# TODO fix: config could be saved in-memory but not on disk
 @contextlib.contextmanager
 def _config_locked():
     """Acquire file lock, yield fresh config dict. On clean exit, atomic-write back."""
@@ -165,22 +170,31 @@ def _config_locked():
     lock_fd = os.open(str(_CONFIG_LOCK_PATH), os.O_CREAT | os.O_RDWR)
     try:
         _lock_file(lock_fd)
+        # Clean up stale temp files from previous failed writes
+        for stale in CONFIG_PATH.parent.glob(CONFIG_PATH.stem + ".*.tmp"):
+            try:
+                stale.unlink()
+                logger.debug("Cleaned up stale temp file: %s", stale)
+            except OSError:
+                logger.warning("Failed to clean up stale temp file: %s", stale)
         config = load_config() or {}
         yield config
         # Only reached if the with-block didn't raise
-        fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_PATH.parent), suffix=".tmp")
         try:
+            fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_PATH.parent), prefix=CONFIG_PATH.stem + ".", suffix=".tmp")
             with os.fdopen(fd, "w") as f:
                 json.dump(config, f, indent=2)
             os.replace(tmp_path, str(CONFIG_PATH))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:  # TODO Better handling ? Let the caller handle?
-                logger.warning("Failed to clean up temp file: %s", tmp_path)
-            raise
+        except Exception as exc:
+            raise ConfigWriteError(f"Failed to save config to {CONFIG_PATH}: {exc}") from exc
     finally:
-        os.close(lock_fd)  # TODO Should secure?
+        try:
+            os.close(lock_fd)
+        except OSError:
+            logger.error(
+                "Failed to close lock fd for %s — config writes may deadlock until restart",
+                _CONFIG_LOCK_PATH,
+            )
 
 
 def resolve_server(args) -> Tuple[str, Optional[str]]:
@@ -275,23 +289,26 @@ def _save_clients_to_config():
     """Persist CLIENTS dict to the active server entry in config (file-locked atomic write)."""
     if not _ACTIVE_SERVER_NAME:
         return
-    with _config_locked() as config:
-        servers = config.get("servers", {})
-        if _ACTIVE_SERVER_NAME not in servers:
-            logger.error("Server '%s' not found in config, cannot persist clients", _ACTIVE_SERVER_NAME)
-            return
-        server_entry = servers[_ACTIVE_SERVER_NAME]
-        with CLIENTS_LOCK:
-            server_entry["clients"] = {
-                cid: {
-                    "salt": info["salt"],
-                    "secret_hash": info["secret_hash"],
-                    "admin": info["admin"],
-                    "name": info.get("name", ""),
-                    "registered": info.get("registered", ""),
+    try:
+        with _config_locked() as config:
+            servers = config.get("servers", {})
+            if _ACTIVE_SERVER_NAME not in servers:
+                logger.error("Server '%s' not found in config, cannot persist clients", _ACTIVE_SERVER_NAME)
+                return
+            server_entry = servers[_ACTIVE_SERVER_NAME]
+            with CLIENTS_LOCK:
+                server_entry["clients"] = {
+                    cid: {
+                        "salt": info["salt"],
+                        "secret_hash": info["secret_hash"],
+                        "admin": info["admin"],
+                        "name": info.get("name", ""),
+                        "registered": info.get("registered", ""),
+                    }
+                    for cid, info in CLIENTS.items()
                 }
-                for cid, info in CLIENTS.items()
-            }
+    except ConfigWriteError:
+        logger.error("Client changes are in memory but failed to persist to disk — will be lost on restart")
 
 
 def resolve_server_config(args) -> int:
@@ -1400,22 +1417,26 @@ def server_setup_cmd(args):
     salt = secrets.token_hex(16)
     secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
-    with _config_locked() as cfg:
-        srvs = cfg.setdefault("servers", {})
-        entry = srvs.setdefault(server_name, {})
-        entry["url"] = url
-        clients = entry.setdefault("clients", {})
-        clients[client_id] = {
-            "salt": salt,
-            "secret_hash": secret_hash,
-            "admin": True,
-            "name": client_name,
-            "registered": datetime.now().isoformat(),
-        }
-        if "default-server" not in cfg:
-            cfg["default-server"] = server_name
-        entry["client-id"] = client_id
-        entry["client-secret"] = client_secret
+    try:
+        with _config_locked() as cfg:
+            srvs = cfg.setdefault("servers", {})
+            entry = srvs.setdefault(server_name, {})
+            entry["url"] = url
+            clients = entry.setdefault("clients", {})
+            clients[client_id] = {
+                "salt": salt,
+                "secret_hash": secret_hash,
+                "admin": True,
+                "name": client_name,
+                "registered": datetime.now().isoformat(),
+            }
+            if "default-server" not in cfg:
+                cfg["default-server"] = server_name
+            entry["client-id"] = client_id
+            entry["client-secret"] = client_secret
+    except ConfigWriteError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"\n✅ Server '{server_name}' configured at {url}")
     print(f"   Admin client ID:     {client_id}")
@@ -1461,33 +1482,37 @@ def server_add_user_cmd(args):
     salt = secrets.token_hex(16)
     secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
-    with _config_locked() as cfg:
-        if not cfg:
-            print("Error: No config file found.", file=sys.stderr)
-            print("Run 'companion server-setup' first.", file=sys.stderr)
-            sys.exit(1)
-        if not server_name:
-            server_name = cfg.get("default-server")
-        if not server_name:
-            print("Error: No server specified and no default-server in config.", file=sys.stderr)
-            sys.exit(1)
-        servers = cfg.get("servers", {})
-        if server_name not in servers:
-            available = ", ".join(servers.keys()) if servers else "(none)"
-            print(f"Error: Server '{server_name}' not found. Available: {available}", file=sys.stderr)
-            sys.exit(1)
-        entry = servers[server_name]
-        clients = entry.setdefault("clients", {})
-        if client_id in clients:
-            print(f"Error: Client '{client_id}' already exists on server '{server_name}'.", file=sys.stderr)
-            sys.exit(1)
-        clients[client_id] = {
-            "salt": salt,
-            "secret_hash": secret_hash,
-            "admin": is_admin,
-            "name": client_name,
-            "registered": datetime.now().isoformat(),
-        }
+    try:
+        with _config_locked() as cfg:
+            if not cfg:
+                print("Error: No config file found.", file=sys.stderr)
+                print("Run 'companion server-setup' first.", file=sys.stderr)
+                sys.exit(1)
+            if not server_name:
+                server_name = cfg.get("default-server")
+            if not server_name:
+                print("Error: No server specified and no default-server in config.", file=sys.stderr)
+                sys.exit(1)
+            servers = cfg.get("servers", {})
+            if server_name not in servers:
+                available = ", ".join(servers.keys()) if servers else "(none)"
+                print(f"Error: Server '{server_name}' not found. Available: {available}", file=sys.stderr)
+                sys.exit(1)
+            entry = servers[server_name]
+            clients = entry.setdefault("clients", {})
+            if client_id in clients:
+                print(f"Error: Client '{client_id}' already exists on server '{server_name}'.", file=sys.stderr)
+                sys.exit(1)
+            clients[client_id] = {
+                "salt": salt,
+                "secret_hash": secret_hash,
+                "admin": is_admin,
+                "name": client_name,
+                "registered": datetime.now().isoformat(),
+            }
+    except ConfigWriteError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     role = "admin" if is_admin else "user"
     print(f"\n✅ Added {role} client to server '{server_name}'")
@@ -1531,18 +1556,22 @@ def connect_cmd(args):
         print("Provide all flags or use --interactive to be prompted.", file=sys.stderr)
         sys.exit(1)
 
-    with _config_locked() as config:
-        servers = config.setdefault("servers", {})
-        if server_name in servers:
-            print(f"Error: Server '{server_name}' already exists. Use a different name.", file=sys.stderr)
-            sys.exit(1)
-        servers[server_name] = {
-            "url": url,
-            "client-id": client_id,
-            "client-secret": client_secret,
-        }
-        if "default-server" not in config:
-            config["default-server"] = server_name
+    try:
+        with _config_locked() as config:
+            servers = config.setdefault("servers", {})
+            if server_name in servers:
+                print(f"Error: Server '{server_name}' already exists. Use a different name.", file=sys.stderr)
+                sys.exit(1)
+            servers[server_name] = {
+                "url": url,
+                "client-id": client_id,
+                "client-secret": client_secret,
+            }
+            if "default-server" not in config:
+                config["default-server"] = server_name
+    except ConfigWriteError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"\n✅ Saved connection for server '{server_name}'")
     print(f"   URL:           {url}")
     print(f"   Client ID:     {client_id}")
