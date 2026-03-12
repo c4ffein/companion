@@ -50,9 +50,10 @@ class TestMultipartBoundary(unittest.TestCase):
         companion.PAD_STATE = {"content": "", "timestamp": 0}
         companion.RATE_LIMIT_STORE.clear()
 
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.clear()
-            companion.CLIENTS[cls.client_id] = _make_client_entry(cls.client_secret, admin=True, name="test-boundary")
+        companion.ACTIVE_SERVER_CLIENTS.clear()
+        companion.ACTIVE_SERVER_CLIENTS[cls.client_id] = _make_client_entry(
+            cls.client_secret, admin=True, name="test-boundary"
+        )
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)

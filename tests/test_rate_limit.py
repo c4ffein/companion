@@ -49,9 +49,10 @@ class TestRateLimit(unittest.TestCase):
         companion.PREVIEW_STATE = {"file_id": None, "timestamp": 0}
         companion.PAD_STATE = {"content": "", "timestamp": 0}
 
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.clear()
-            companion.CLIENTS[cls.client_id] = _make_client_entry(cls.client_secret, admin=True, name="test-rate")
+        companion.ACTIVE_SERVER_CLIENTS.clear()
+        companion.ACTIVE_SERVER_CLIENTS[cls.client_id] = _make_client_entry(
+            cls.client_secret, admin=True, name="test-rate"
+        )
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)

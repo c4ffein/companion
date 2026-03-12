@@ -918,8 +918,10 @@ FILES: Dict[str, FileEntry] = {}
 WORKSPACE_LOCK = Lock()
 
 # Per-client token auth: {client_id: {salt, secret_hash, admin, name, registered}}
-CLIENTS: Dict[str, dict] = {}
-CLIENTS_LOCK = Lock()
+# In-memory cache of the config file's clients section.
+# Writes always go through _config_locked(), which auto-rebuilds ACTIVE_SERVER_CLIENTS.
+# Reads are safe without a lock (dict reference swap is atomic under CPython's GIL).
+ACTIVE_SERVER_CLIENTS: Dict[str, dict] = {}
 _ACTIVE_SERVER_NAME: Optional[str] = None
 
 # Preview state: current preview for all clients
@@ -969,15 +971,22 @@ def load_config() -> Optional[dict]:
             with open(CONFIG_PATH) as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError) as e:
-            print(f"Warning: Failed to load config from {CONFIG_PATH}: {e}", file=sys.stderr)
+            logger.warning("Failed to load config from %s: %s", CONFIG_PATH, e)
     return None
 
 
-class ConfigWriteError(Exception):
+class ConfigError(Exception):
+    """Base for all config-related errors."""
+
+
+class ConfigReadError(ConfigError):
+    """Raised when config cannot be read or expected entries are missing."""
+
+
+class ConfigWriteError(ConfigError):
     """Raised when the config file cannot be persisted to disk."""
 
 
-# TODO fix: config could be saved in-memory but not on disk
 @contextlib.contextmanager
 def _config_locked():
     """Acquire file lock, yield fresh config dict. On clean exit, atomic-write back."""
@@ -1002,6 +1011,13 @@ def _config_locked():
             os.replace(tmp_path, str(CONFIG_PATH))
         except Exception as exc:
             raise ConfigWriteError(f"Failed to save config to {CONFIG_PATH}: {exc}") from exc
+        # Rebuild the in-memory client cache after a successful write.
+        # The reference swap is atomic under CPython's GIL, so readers never
+        # see a partially-built dict.  Only attempt when running as a server
+        # (_ACTIVE_SERVER_NAME is set); CLI commands don't need the cache.
+        if _ACTIVE_SERVER_NAME:
+            global ACTIVE_SERVER_CLIENTS
+            ACTIVE_SERVER_CLIENTS = dict(_get_clients_from_config(config))
     finally:
         try:
             os.close(lock_fd)
@@ -1100,36 +1116,26 @@ def _print_config_help():
         print(f"     {line}", file=sys.stderr)
 
 
-def _save_clients_to_config():
-    """Persist CLIENTS dict to the active server entry in config (file-locked atomic write)."""
+def _get_clients_from_config(config: dict) -> dict:
+    """Return a mutable reference to the clients dict for the active server.
+
+    Use this inside _config_locked() when you need to add/remove clients.
+    Raises ConfigReadError if the active server is missing, because you cannot
+    mutate a dict that doesn't exist.
+
+    """
     if not _ACTIVE_SERVER_NAME:
-        return
-    try:
-        with _config_locked() as config:
-            servers = config.get("servers", {})
-            if _ACTIVE_SERVER_NAME not in servers:
-                logger.error("Server '%s' not found in config, cannot persist clients", _ACTIVE_SERVER_NAME)
-                return
-            server_entry = servers[_ACTIVE_SERVER_NAME]
-            with CLIENTS_LOCK:
-                server_entry["clients"] = {
-                    cid: {
-                        "salt": info["salt"],
-                        "secret_hash": info["secret_hash"],
-                        "admin": info["admin"],
-                        "name": info.get("name", ""),
-                        "registered": info.get("registered", ""),
-                    }
-                    for cid, info in CLIENTS.items()
-                }
-    except ConfigWriteError:
-        logger.error("Client changes are in memory but failed to persist to disk — will be lost on restart")
+        raise ConfigReadError("No active server name — cannot persist client changes")
+    servers = config.get("servers", {})
+    if _ACTIVE_SERVER_NAME not in servers:
+        raise ConfigReadError(f"Server '{_ACTIVE_SERVER_NAME}' not found in config")
+    return servers[_ACTIVE_SERVER_NAME].setdefault("clients", {})
 
 
 def resolve_server_config(args) -> int:
     """
     Resolve server port from args and config for server mode.
-    Loads registered clients into CLIENTS global.
+    Loads registered clients into ACTIVE_SERVER_CLIENTS global.
     Returns port or exits with helpful error message.
 
     Priority order:
@@ -1183,12 +1189,11 @@ def resolve_server_config(args) -> int:
             if parsed.port:
                 port = parsed.port
         # Load registered clients
-        clients_data = server_config.get("clients", {})
-        with CLIENTS_LOCK:
-            CLIENTS.update(clients_data)
+        global ACTIVE_SERVER_CLIENTS
+        ACTIVE_SERVER_CLIENTS = dict(server_config.get("clients", {}))
 
     # Fail if no clients configured
-    if not CLIENTS:
+    if not ACTIVE_SERVER_CLIENTS:
         print("Error: No clients configured.", file=sys.stderr)
         print("Run 'companion server-setup' to configure the server first.", file=sys.stderr)
         sys.exit(1)
@@ -1320,13 +1325,12 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return None
         if not client_secret or not all(c in self._VALID_SECRET_CHARS for c in client_secret):
             return None
-        with CLIENTS_LOCK:
-            client = CLIENTS.get(client_id)
-            if not client:
-                return None
-            expected = hashlib.sha256((client["salt"] + client_secret).encode()).hexdigest()
-            if hmac.compare_digest(client["secret_hash"], expected):
-                return {"client_id": client_id, **client}
+        client = ACTIVE_SERVER_CLIENTS.get(client_id)
+        if not client:
+            return None
+        expected = hashlib.sha256((client["salt"] + client_secret).encode()).hexdigest()
+        if hmac.compare_digest(client["secret_hash"], expected):
+            return {"client_id": client_id, **client}
         return None
 
     _AUTH_FAILED = (HTTPStatus.UNAUTHORIZED, {"error": "Invalid credentials"})
@@ -1635,19 +1639,21 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             salt = secrets.token_hex(16)
             secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
-            with CLIENTS_LOCK:
-                if client_id in CLIENTS:
-                    return HTTPStatus.CONFLICT, {"error": "client_id already exists"}
-
-                CLIENTS[client_id] = {
-                    "salt": salt,
-                    "secret_hash": secret_hash,
-                    "admin": False,
-                    "name": name,
-                    "registered": datetime.now().isoformat(),
-                }
-
-            _save_clients_to_config()
+            try:
+                with _config_locked() as config:
+                    clients = _get_clients_from_config(config)
+                    if client_id in clients:
+                        return HTTPStatus.CONFLICT, {"error": "client_id already exists"}
+                    clients[client_id] = {
+                        "salt": salt,
+                        "secret_hash": secret_hash,
+                        "admin": False,
+                        "name": name,
+                        "registered": datetime.now().isoformat(),
+                    }
+            except ConfigError as exc:
+                logger.error("Failed to register client: %s", exc)
+                return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Failed to persist client"}
 
             return HTTPStatus.OK, {"success": True, "client_id": client_id, "admin": False, "name": name}
 
@@ -1669,28 +1675,30 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         if client["client_id"] == target_client_id:
             return HTTPStatus.BAD_REQUEST, {"error": "Cannot delete yourself"}
 
-        with CLIENTS_LOCK:
-            if target_client_id not in CLIENTS:
-                return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
-            del CLIENTS[target_client_id]
-
-        _save_clients_to_config()
+        try:
+            with _config_locked() as config:
+                clients = _get_clients_from_config(config)
+                if target_client_id not in clients:
+                    return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
+                del clients[target_client_id]
+        except ConfigError as exc:
+            logger.error("Failed to delete client: %s", exc)
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Failed to persist client deletion"}
 
         return HTTPStatus.OK, {"success": True, "deleted": target_client_id}
 
     @_route("GET", "/api/clients", auth=Auth.ADMIN)
     def _handle_list_clients(self, client=None, body=None):
         """Handle listing registered clients (admin only, secrets excluded)"""
-        with CLIENTS_LOCK:
-            clients_list = [
-                {
-                    "client_id": cid,
-                    "admin": info["admin"],
-                    "name": info.get("name", ""),
-                    "registered": info.get("registered", ""),
-                }
-                for cid, info in CLIENTS.items()
-            ]
+        clients_list = [
+            {
+                "client_id": cid,
+                "admin": info["admin"],
+                "name": info.get("name", ""),
+                "registered": info.get("registered", ""),
+            }
+            for cid, info in ACTIVE_SERVER_CLIENTS.items()
+        ]
 
         return HTTPStatus.OK, clients_list
 
@@ -1752,7 +1760,7 @@ def run_server(port: int):
     logger.debug("Creating HTTPServer instance...")
     httpd = FastHTTPServer(server_address, FileShareHandler)
 
-    client_count = len(CLIENTS)
+    client_count = len(ACTIVE_SERVER_CLIENTS)
     logger.debug("Server bound successfully")
     logger.info(f"File sharing server running on http://0.0.0.0:{port}")
     logger.info(f"Registered clients: {client_count}")

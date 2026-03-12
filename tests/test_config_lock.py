@@ -220,28 +220,26 @@ class TestConfigLockedContextManager(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestSaveClientsMissingServer(unittest.TestCase):
-    """_save_clients_to_config with server not in config."""
+class TestClientMutationMissingServer(unittest.TestCase):
+    """_get_clients_from_config with server not in config."""
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
         self.mod = _import_companion()
         _patch_paths(self.mod, self.tmp_dir)
 
-    def test_save_clients_fails_if_server_missing(self):
-        """_save_clients_to_config logs error and doesn't write when server missing."""
+    def test_get_clients_fails_if_server_missing(self):
+        """_get_clients_from_config raises ConfigReadError when server missing."""
         config_path = self.mod.CONFIG_PATH
         config_path.parent.mkdir(parents=True, exist_ok=True)
         initial = {"servers": {"other": {"url": "http://localhost"}}}
         with open(config_path, "w") as f:
             json.dump(initial, f)
         self.mod._ACTIVE_SERVER_NAME = "nonexistent"
-        self.mod.CLIENTS = {"c1": {"salt": "s", "secret_hash": "h", "admin": False}}
-        with self.assertLogs("companion", level="ERROR") as cm:
-            self.mod._save_clients_to_config()
-        self.assertIn("not found in config", cm.output[0])
-        # Config should still be written (context manager completes cleanly after return)
-        # but the server entry should NOT have been created
+        with self.assertRaises(self.mod.ConfigReadError):
+            with self.mod._config_locked() as config:
+                self.mod._get_clients_from_config(config)
+        # Config should be unchanged
         with open(config_path) as f:
             result = json.load(f)
         config_dir = str(config_path.parent)
@@ -254,7 +252,7 @@ class TestSaveClientsMissingServer(unittest.TestCase):
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except BlockingIOError:
-                self.fail("Lock file is still held after _save_clients_to_config()")
+                self.fail("Lock file is still held after _get_clients_from_config()")
             finally:
                 os.close(fd)
         self.assertNotIn("nonexistent", result["servers"])

@@ -1888,7 +1888,7 @@ class ConfigTest(unittest.TestCase):
         """Test that invalid JSON in config shows warning but continues"""
         self.config_file.write_text("{ invalid json }")
         result = self._run_with_home(["list"])
-        self.assertIn("Warning", result.stderr)
+        self.assertIn("Failed to load config", result.stderr)
         self.assertIn("No server specified", result.stderr)
 
     def test_09_server_mode_uses_config(self):

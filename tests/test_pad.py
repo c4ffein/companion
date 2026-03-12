@@ -52,9 +52,10 @@ class TestPadAPI(unittest.TestCase):
         companion.RATE_LIMIT_STORE.clear()
 
         # Set up test client in CLIENTS with proper hashed secret
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.clear()
-            companion.CLIENTS[cls.client_id] = _make_client_entry(cls.client_secret, admin=True, name="test-pad")
+        companion.ACTIVE_SERVER_CLIENTS.clear()
+        companion.ACTIVE_SERVER_CLIENTS[cls.client_id] = _make_client_entry(
+            cls.client_secret, admin=True, name="test-pad"
+        )
 
         # Start server in thread
         def run_server():
@@ -287,9 +288,10 @@ class TestPadCLI(unittest.TestCase):
         companion.RATE_LIMIT_STORE.clear()
 
         # Set up test client in CLIENTS with proper hashed secret
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.clear()
-            companion.CLIENTS[cls.client_id] = _make_client_entry(cls.client_secret, admin=True, name="test-pad-cli")
+        companion.ACTIVE_SERVER_CLIENTS.clear()
+        companion.ACTIVE_SERVER_CLIENTS[cls.client_id] = _make_client_entry(
+            cls.client_secret, admin=True, name="test-pad-cli"
+        )
 
         # Start server in thread
         def run_server():

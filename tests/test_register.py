@@ -108,10 +108,28 @@ class TestRegisterAPI(unittest.TestCase):
         companion.PAD_STATE = {"content": "", "timestamp": 0}
         companion.RATE_LIMIT_STORE.clear()
 
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.clear()
-            companion.CLIENTS[cls.admin_id] = _make_client_entry(cls.admin_secret, admin=True, name="admin")
-            companion.CLIENTS[cls.nonadmin_id] = _make_client_entry(cls.nonadmin_secret, admin=False, name="nonadmin")
+        # Set up config file so _config_locked can persist
+        cls._tmp_config_dir = tempfile.mkdtemp()
+        cls._orig_config_path = companion.CONFIG_PATH
+        cls._orig_lock_path = companion._CONFIG_LOCK_PATH
+        companion.CONFIG_PATH = Path(cls._tmp_config_dir) / "config.json"
+        companion._CONFIG_LOCK_PATH = companion.CONFIG_PATH.with_suffix(".lock")
+
+        admin_entry = _make_client_entry(cls.admin_secret, admin=True, name="admin")
+        nonadmin_entry = _make_client_entry(cls.nonadmin_secret, admin=False, name="nonadmin")
+        config = {
+            "servers": {
+                "testserver": {
+                    "url": cls.base_url,
+                    "clients": {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry},
+                }
+            }
+        }
+        with open(companion.CONFIG_PATH, "w") as f:
+            json.dump(config, f)
+
+        companion._ACTIVE_SERVER_NAME = "testserver"
+        companion.ACTIVE_SERVER_CLIENTS = {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry}
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)
@@ -129,6 +147,9 @@ class TestRegisterAPI(unittest.TestCase):
         if hasattr(cls, "httpd"):
             cls.httpd.shutdown()
             cls.httpd.server_close()
+        companion.CONFIG_PATH = cls._orig_config_path
+        companion._CONFIG_LOCK_PATH = cls._orig_lock_path
+        companion._ACTIVE_SERVER_NAME = None
 
     def setUp(self):
         with companion.RATE_LIMIT_LOCK:
@@ -173,9 +194,8 @@ class TestRegisterAPI(unittest.TestCase):
         self.assertFalse(result["admin"])
 
         # New client exists in CLIENTS
-        with companion.CLIENTS_LOCK:
-            self.assertIn(cid, companion.CLIENTS)
-            self.assertEqual(companion.CLIENTS[cid]["name"], "fresh")
+        self.assertIn(cid, companion.ACTIVE_SERVER_CLIENTS)
+        self.assertEqual(companion.ACTIVE_SERVER_CLIENTS[cid]["name"], "fresh")
 
         # New client can authenticate (GET /api/pad succeeds)
         new_token = f"{cid}:{csecret}"
@@ -185,34 +205,33 @@ class TestRegisterAPI(unittest.TestCase):
             self.assertEqual(r.status, 200)
 
         # Cleanup
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.pop(cid, None)
+        with companion._config_locked() as cfg:
+            companion._get_clients_from_config(cfg).pop(cid, None)
 
     def test_register_with_provided_id(self):
         """Admin can register a client with a specific chosen client_id."""
         chosen_id = "my-chosen-id"
         # Ensure it doesn't already exist
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.pop(chosen_id, None)
+        with companion._config_locked() as cfg:
+            companion._get_clients_from_config(cfg).pop(chosen_id, None)
 
         cid, csecret, resp = self._register(self.admin_token, client_id=chosen_id, name="chosen")
         result = json.loads(resp.read().decode())
         self.assertTrue(result["success"])
         self.assertEqual(result["client_id"], chosen_id)
 
-        with companion.CLIENTS_LOCK:
-            self.assertIn(chosen_id, companion.CLIENTS)
+        self.assertIn(chosen_id, companion.ACTIVE_SERVER_CLIENTS)
 
         # Cleanup
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.pop(chosen_id, None)
+        with companion._config_locked() as cfg:
+            companion._get_clients_from_config(cfg).pop(chosen_id, None)
 
     def test_register_duplicate_id(self):
         """Registering the same client_id twice returns 409 CONFLICT."""
         dup_id = "duplicate-test-id"
         # Ensure clean state
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.pop(dup_id, None)
+        with companion._config_locked() as cfg:
+            companion._get_clients_from_config(cfg).pop(dup_id, None)
 
         # First registration succeeds
         _cid, _csecret, resp = self._register(self.admin_token, client_id=dup_id, name="first")
@@ -224,8 +243,8 @@ class TestRegisterAPI(unittest.TestCase):
         self.assertEqual(cm.exception.code, 409)
 
         # Cleanup
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.pop(dup_id, None)
+        with companion._config_locked() as cfg:
+            companion._get_clients_from_config(cfg).pop(dup_id, None)
 
 
 class TestRegisterCLI(unittest.TestCase):
@@ -246,12 +265,28 @@ class TestRegisterCLI(unittest.TestCase):
         companion.PAD_STATE = {"content": "", "timestamp": 0}
         companion.RATE_LIMIT_STORE.clear()
 
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.clear()
-            companion.CLIENTS[cls.admin_id] = _make_client_entry(cls.admin_secret, admin=True, name="cli-admin")
-            companion.CLIENTS[cls.nonadmin_id] = _make_client_entry(
-                cls.nonadmin_secret, admin=False, name="cli-nonadmin"
-            )
+        # Set up config file so _config_locked can persist
+        cls._tmp_config_dir = tempfile.mkdtemp()
+        cls._orig_config_path = companion.CONFIG_PATH
+        cls._orig_lock_path = companion._CONFIG_LOCK_PATH
+        companion.CONFIG_PATH = Path(cls._tmp_config_dir) / "config.json"
+        companion._CONFIG_LOCK_PATH = companion.CONFIG_PATH.with_suffix(".lock")
+
+        admin_entry = _make_client_entry(cls.admin_secret, admin=True, name="cli-admin")
+        nonadmin_entry = _make_client_entry(cls.nonadmin_secret, admin=False, name="cli-nonadmin")
+        config = {
+            "servers": {
+                "testserver": {
+                    "url": cls.base_url,
+                    "clients": {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry},
+                }
+            }
+        }
+        with open(companion.CONFIG_PATH, "w") as f:
+            json.dump(config, f)
+
+        companion._ACTIVE_SERVER_NAME = "testserver"
+        companion.ACTIVE_SERVER_CLIENTS = {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry}
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)
@@ -269,6 +304,9 @@ class TestRegisterCLI(unittest.TestCase):
         if hasattr(cls, "httpd"):
             cls.httpd.shutdown()
             cls.httpd.server_close()
+        companion.CONFIG_PATH = cls._orig_config_path
+        companion._CONFIG_LOCK_PATH = cls._orig_lock_path
+        companion._ACTIVE_SERVER_NAME = None
 
     def setUp(self):
         self.tmp_home = tempfile.mkdtemp()
@@ -312,8 +350,8 @@ class TestRegisterCLI(unittest.TestCase):
             self.assertEqual(r.status, 200)
 
     def _cleanup_client(self, client_id):
-        with companion.CLIENTS_LOCK:
-            companion.CLIENTS.pop(client_id, None)
+        with companion._config_locked() as cfg:
+            companion._get_clients_from_config(cfg).pop(client_id, None)
 
     # --- Non-interactive credential tests ---
 
@@ -510,8 +548,7 @@ class TestRegisterCLI(unittest.TestCase):
 
     def test_register_cli_non_admin(self):
         """register with non-admin credentials prints 403 error, no changes on server."""
-        with companion.CLIENTS_LOCK:
-            clients_before = set(companion.CLIENTS.keys())
+        clients_before = set(companion.ACTIVE_SERVER_CLIENTS.keys())
         _write_config(
             self.tmp_home,
             {
@@ -530,8 +567,7 @@ class TestRegisterCLI(unittest.TestCase):
         self.assertIn("Registration failed", result.stdout)
         self.assertIn("Admin access required", result.stdout)
         # No client was added on the server
-        with companion.CLIENTS_LOCK:
-            self.assertEqual(set(companion.CLIENTS.keys()), clients_before)
+        self.assertEqual(set(companion.ACTIVE_SERVER_CLIENTS.keys()), clients_before)
 
 
 if __name__ == "__main__":
