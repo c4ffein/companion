@@ -102,6 +102,7 @@
         Could not manage credentials through browser storage
         <button class="toast-close" onclick="document.getElementById('storageToast').classList.remove('show')">&times;</button>
     </div>
+    <div id="rotationToast" class="toast"></div>
     <div id="uploadTab" class="tab-content active">
         <div class="upload-form">
             <h2>Upload File</h2>
@@ -271,9 +272,7 @@
 
         async function loadFiles() {
             try {
-                const authHeader = getAuthHeader();
-                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-                const response = await fetch('/api/files', opts);
+                const response = await authFetch('/api/files', {});
                 if (response.status === 401) return;
                 const files = await response.json();
 
@@ -305,9 +304,7 @@
         // Fetch a /download/ URL with auth, returning the Response.
         function authDownload(fileId) {
             const url = '/download/' + encodeURIComponent(fileId);
-            const authHeader = getAuthHeader();
-            const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-            return fetch(url, opts);
+            return authFetch(url, {});
         }
 
         function downloadFile(fileId) {
@@ -490,9 +487,7 @@
 
         async function checkPreviewUpdate() {
             try {
-                const authHeader = getAuthHeader();
-                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-                const response = await fetch('/api/preview/current', opts);
+                const response = await authFetch('/api/preview/current', {});
                 if (response.status === 401) return;
                 const state = await response.json();
 
@@ -511,9 +506,7 @@
         // Pad functions
         async function loadPadContent() {
             try {
-                const authHeader = getAuthHeader();
-                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-                const response = await fetch('/api/pad', opts);
+                const response = await authFetch('/api/pad', {});
                 if (response.status === 401) return;
                 const state = await response.json();
 
@@ -544,10 +537,9 @@
                 padStatus.textContent = 'Saving...';
                 padStatus.style.color = 'var(--text-secondary)';
 
-                const response = await fetch('/api/pad', {
+                const response = await authFetch('/api/pad', {
                     method: 'POST',
                     headers: {
-                        'Authorization': authHeader,
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({ content: padContent.value })
@@ -773,6 +765,53 @@
                 return 'Bearer ' + creds.clientId + ':' + creds.clientSecret;
             }
             return '';
+        }
+
+        // Rotation pause state: when server returns 409 with the rotation error,
+        // show a modal and attempt to complete rotation automatically.
+        // Each device has its own client_id/secret pair, so auto-completing
+        // rotation here only affects this device's credentials — it cannot
+        // interfere with another device's in-progress rotation.
+        let rotationToastTimer = null;
+
+        // Minimal implementation: only resolves rotation if the user has a valid token (for now).
+        function handleRotationBlocked() {
+            // Debounce: only show toast after 300ms of sustained blocking
+            if (rotationToastTimer) return;
+            rotationToastTimer = setTimeout(async () => {
+                // Try to complete rotation with our current secret
+                const authHeader = getAuthHeader();
+                if (authHeader) {
+                    try {
+                        const resp = await fetch('/api/token/complete-client-rotation', {
+                            method: 'POST',
+                            headers: { 'Authorization': authHeader, 'Content-Length': '0' }
+                        });
+                        if (resp.ok) {
+                            rotationToastTimer = null;
+                            return; // Rotation completed — carry on
+                        }
+                    } catch (e) { /* fall through to show toast */ }
+                }
+                // Could not complete — show the toast
+                const toast = document.getElementById('rotationToast');
+                toast.textContent = 'Token rotation in progress — update your credentials in the Settings tab';
+                toast.classList.add('show');
+            }, 300);
+        }
+
+        function authFetch(url, opts) {
+            const authHeader = getAuthHeader();
+            const mergedOpts = { ...opts, headers: { ...(opts && opts.headers), 'Authorization': authHeader } };
+            return fetch(url, mergedOpts).then(async response => {
+                if (response.status === 409) {
+                    const body = await response.clone().json().catch(() => null);
+                    if (body && body.error && body.error.startsWith('Token rotation in progress')) {
+                        handleRotationBlocked();
+                    }
+                }
+                return response;
+            });
         }
 
         // Settings tab handlers

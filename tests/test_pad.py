@@ -25,8 +25,7 @@ def _make_client_entry(client_secret, admin=True, name="test"):
     salt = secrets.token_hex(16)
     secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
     return {
-        "salt": salt,
-        "secret_hash": secret_hash,
+        "tokens": [{"salt": salt, "secret_hash": secret_hash}],
         "admin": admin,
         "name": name,
         "registered": "2026-01-01T00:00:00",

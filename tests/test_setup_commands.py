@@ -39,6 +39,26 @@ def _make_env(tmp_home):
     return env
 
 
+def _assert_client_creds(test, server, expected_id=None, expected_secret=None):
+    """Assert client-id is a non-empty string and client-secrets is a single-element list of non-empty strings.
+
+    If expected_id/expected_secret are given, also assert exact values.
+    """
+    cid = server["client-id"]
+    test.assertIsInstance(cid, str)
+    test.assertTrue(len(cid) > 0, "client-id must be non-empty")
+    if expected_id is not None:
+        test.assertEqual(cid, expected_id)
+
+    csecrets = server["client-secrets"]
+    test.assertIsInstance(csecrets, list)
+    test.assertEqual(len(csecrets), 1, "client-secrets must have exactly one element")
+    test.assertIsInstance(csecrets[0], str)
+    test.assertTrue(len(csecrets[0]) > 0, "client secret must be non-empty")
+    if expected_secret is not None:
+        test.assertEqual(csecrets[0], expected_secret)
+
+
 def _read_config(tmp_home):
     config_path = Path(tmp_home) / ".config" / "companion" / "config.json"
     with open(config_path) as f:
@@ -66,8 +86,7 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["default"]
         self.assertEqual(server["url"], "http://example.com:8080")
-        self.assertTrue(len(server["client-id"]) > 0)
-        self.assertTrue(len(server["client-secret"]) > 0)
+        _assert_client_creds(self, server)
         self.assertIn(server["client-id"], server["clients"])
         self.assertEqual(config["default-server"], "default")
 
@@ -93,8 +112,7 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["myserver"]
         self.assertEqual(server["url"], "http://my.host:9090")
-        self.assertEqual(server["client-id"], "my-id-123")
-        self.assertEqual(server["client-secret"], "my-secret-456")
+        _assert_client_creds(self, server, expected_id="my-id-123", expected_secret="my-secret-456")
         client = server["clients"]["my-id-123"]
         self.assertTrue(client["admin"])
         self.assertEqual(client["name"], "Admin Bob")
@@ -146,8 +164,9 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
         self.assertEqual(len(user_ids), 1)
         user = clients[user_ids[0]]
         self.assertFalse(user["admin"])
-        self.assertIn("salt", user)
-        self.assertIn("secret_hash", user)
+        self.assertIn("tokens", user)
+        self.assertIn("salt", user["tokens"][0])
+        self.assertIn("secret_hash", user["tokens"][0])
         self.assertIn("registered", user)
 
     def test_explicit_credentials(self):
@@ -198,8 +217,7 @@ class TestServerSetupInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["myserver"]
         self.assertEqual(server["url"], "http://test.local:5000")
-        self.assertEqual(server["client-id"], "custom-id")
-        self.assertEqual(server["client-secret"], "custom-secret")
+        _assert_client_creds(self, server, expected_id="custom-id", expected_secret="custom-secret")
         client = server["clients"]["custom-id"]
         self.assertEqual(client["name"], "My Admin")
 
@@ -213,8 +231,9 @@ class TestServerSetupInteractive(unittest.TestCase):
         server = config["servers"]["default"]
         self.assertEqual(server["url"], "http://auto.local:8080")
         # Client ID and secret should be auto-generated (hex strings)
+        _assert_client_creds(self, server)
         self.assertEqual(len(server["client-id"]), 32)  # token_hex(16) = 32 chars
-        self.assertEqual(len(server["client-secret"]), 64)  # token_hex(32) = 64 chars
+        self.assertEqual(len(server["client-secrets"][0]), 64)  # token_hex(32) = 64 chars
 
     def test_url_flag_skips_url_prompt(self):
         """--interactive --url <url> should not prompt for URL."""
@@ -229,8 +248,7 @@ class TestServerSetupInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["srv1"]
         self.assertEqual(server["url"], "http://flagged.local:3000")
-        self.assertEqual(server["client-id"], "my-cid")
-        self.assertEqual(server["client-secret"], "my-csecret")
+        _assert_client_creds(self, server, expected_id="my-cid", expected_secret="my-csecret")
 
 
 class TestServerAddUserInteractive(unittest.TestCase):
@@ -317,8 +335,7 @@ class TestConnectNonInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["default"]
         self.assertEqual(server["url"], "http://example.com:8080")
-        self.assertEqual(server["client-id"], "my-id")
-        self.assertEqual(server["client-secret"], "my-secret")
+        _assert_client_creds(self, server, expected_id="my-id", expected_secret="my-secret")
         self.assertEqual(config["default-server"], "default")
 
     def test_custom_server_name(self):
@@ -357,8 +374,7 @@ class TestConnectInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["default"]
         self.assertEqual(server["url"], "http://test.local:5000")
-        self.assertEqual(server["client-id"], "my-cid")
-        self.assertEqual(server["client-secret"], "my-csecret")
+        _assert_client_creds(self, server, expected_id="my-cid", expected_secret="my-csecret")
 
     def test_interactive_with_url_pre_provided(self):
         """--interactive --url <url> should only prompt for client-id and client-secret."""
@@ -372,8 +388,7 @@ class TestConnectInteractive(unittest.TestCase):
         config = _read_config(self.tmp_home)
         server = config["servers"]["default"]
         self.assertEqual(server["url"], "http://flagged.local:3000")
-        self.assertEqual(server["client-id"], "prompted-cid")
-        self.assertEqual(server["client-secret"], "prompted-csecret")
+        _assert_client_creds(self, server, expected_id="prompted-cid", expected_secret="prompted-csecret")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ Usage:
     Get pad:       python companion.py get-pad
     Set pad:       python companion.py set-pad <content>
     Connect:       python companion.py connect --url URL --client-id ID --client-secret SECRET
+    Rotate:        python companion.py rotate [--server NAME]
+    Complete:      python companion.py complete-rotation [--server NAME]
     Register:      python companion.py register [--name NAME] [--interactive]
     Clients:       python companion.py clients
     Delete client: python companion.py delete-client <client_id>
@@ -180,6 +182,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         Could not manage credentials through browser storage
         <button class="toast-close" onclick="document.getElementById('storageToast').classList.remove('show')">&times;</button>
     </div>
+    <div id="rotationToast" class="toast"></div>
     <div id="uploadTab" class="tab-content active">
         <div class="upload-form">
             <h2>Upload File</h2>
@@ -349,9 +352,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 
         async function loadFiles() {
             try {
-                const authHeader = getAuthHeader();
-                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-                const response = await fetch('/api/files', opts);
+                const response = await authFetch('/api/files', {});
                 if (response.status === 401) return;
                 const files = await response.json();
 
@@ -383,9 +384,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         // Fetch a /download/ URL with auth, returning the Response.
         function authDownload(fileId) {
             const url = '/download/' + encodeURIComponent(fileId);
-            const authHeader = getAuthHeader();
-            const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-            return fetch(url, opts);
+            return authFetch(url, {});
         }
 
         function downloadFile(fileId) {
@@ -568,9 +567,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 
         async function checkPreviewUpdate() {
             try {
-                const authHeader = getAuthHeader();
-                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-                const response = await fetch('/api/preview/current', opts);
+                const response = await authFetch('/api/preview/current', {});
                 if (response.status === 401) return;
                 const state = await response.json();
 
@@ -589,9 +586,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         // Pad functions
         async function loadPadContent() {
             try {
-                const authHeader = getAuthHeader();
-                const opts = authHeader ? { headers: { 'Authorization': authHeader } } : {};
-                const response = await fetch('/api/pad', opts);
+                const response = await authFetch('/api/pad', {});
                 if (response.status === 401) return;
                 const state = await response.json();
 
@@ -622,10 +617,9 @@ _INDEX_HTML = """<!DOCTYPE html>
                 padStatus.textContent = 'Saving...';
                 padStatus.style.color = 'var(--text-secondary)';
 
-                const response = await fetch('/api/pad', {
+                const response = await authFetch('/api/pad', {
                     method: 'POST',
                     headers: {
-                        'Authorization': authHeader,
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({ content: padContent.value })
@@ -853,6 +847,53 @@ _INDEX_HTML = """<!DOCTYPE html>
             return '';
         }
 
+        // Rotation pause state: when server returns 409 with the rotation error,
+        // show a modal and attempt to complete rotation automatically.
+        // Each device has its own client_id/secret pair, so auto-completing
+        // rotation here only affects this device's credentials — it cannot
+        // interfere with another device's in-progress rotation.
+        let rotationToastTimer = null;
+
+        // Minimal implementation: only resolves rotation if the user has a valid token (for now).
+        function handleRotationBlocked() {
+            // Debounce: only show toast after 300ms of sustained blocking
+            if (rotationToastTimer) return;
+            rotationToastTimer = setTimeout(async () => {
+                // Try to complete rotation with our current secret
+                const authHeader = getAuthHeader();
+                if (authHeader) {
+                    try {
+                        const resp = await fetch('/api/token/complete-client-rotation', {
+                            method: 'POST',
+                            headers: { 'Authorization': authHeader, 'Content-Length': '0' }
+                        });
+                        if (resp.ok) {
+                            rotationToastTimer = null;
+                            return; // Rotation completed — carry on
+                        }
+                    } catch (e) { /* fall through to show toast */ }
+                }
+                // Could not complete — show the toast
+                const toast = document.getElementById('rotationToast');
+                toast.textContent = 'Token rotation in progress — update your credentials in the Settings tab';
+                toast.classList.add('show');
+            }, 300);
+        }
+
+        function authFetch(url, opts) {
+            const authHeader = getAuthHeader();
+            const mergedOpts = { ...opts, headers: { ...(opts && opts.headers), 'Authorization': authHeader } };
+            return fetch(url, mergedOpts).then(async response => {
+                if (response.status === 409) {
+                    const body = await response.clone().json().catch(() => null);
+                    if (body && body.error && body.error.startsWith('Token rotation in progress')) {
+                        handleRotationBlocked();
+                    }
+                }
+                return response;
+            });
+        }
+
         // Settings tab handlers
         function showSettingsStatus(message, isError = false) {
             const statusDiv = document.getElementById('settingsStatus');
@@ -917,11 +958,12 @@ class FileEntry:
 FILES: Dict[str, FileEntry] = {}
 WORKSPACE_LOCK = Lock()
 
-# Per-client token auth: {client_id: {salt, secret_hash, admin, name, registered}}
+# Per-client token auth: {client_id: {tokens: [{salt, secret_hash}, ...], admin, name, registered}}
 # In-memory cache of the config file's clients section.
 # Writes always go through _config_locked(), which auto-rebuilds ACTIVE_SERVER_CLIENTS.
 # Reads are safe without a lock (dict reference swap is atomic under CPython's GIL).
 ACTIVE_SERVER_CLIENTS: Dict[str, dict] = {}
+_ROTATION_BLOCKED = (HTTPStatus.CONFLICT, {"error": "Token rotation in progress — call complete-client-rotation first"})
 _ACTIVE_SERVER_NAME: Optional[str] = None
 
 # Preview state: current preview for all clients
@@ -1049,8 +1091,15 @@ def resolve_server(args) -> Tuple[str, Optional[str]]:
         if cli_auth_token:
             return cli_auth_token
         cid = server_config.get("client-id")
+        if not cid:
+            return None
+        # New format: client-secrets list (use last = newest)
+        csecrets = server_config.get("client-secrets")
+        if csecrets and isinstance(csecrets, list):
+            return f"{cid}:{csecrets[-1]}"
+        # Legacy format: single client-secret string
         csecret = server_config.get("client-secret")
-        if cid and csecret:
+        if csecret:
             return f"{cid}:{csecret}"
         return None
 
@@ -1214,11 +1263,14 @@ class Auth(enum.Enum):
 _ROUTES = []  # [(http_method, path_regex, param_names, handler)]
 
 
-def _route(method, path, auth=Auth.REGULAR, rate_limit=False, parse_body=False, max_body=None):
+def _route(method, path, auth=Auth.REGULAR, rate_limit=False, parse_body=False, max_body=None, rotation_ok=False):
     """Decorator for route handlers. Registers the route and handles auth, rate limiting, body reading.
 
     Path patterns use {name} for parameters, e.g. "/download/{file_id}".
     The decorated function receives keyword arguments: client, body, and any path params.
+
+    rotation_ok: if False (default) and the client has a rotation in progress (2 tokens),
+    the request is rejected with 409. Set to True for rotation endpoints.
     """
 
     # Compile path pattern to regex: "/download/{file_id}" -> r"^/download/(?P<file_id>[A-Za-z0-9-]+)$"
@@ -1240,6 +1292,12 @@ def _route(method, path, auth=Auth.REGULAR, rate_limit=False, parse_body=False, 
                     return self._AUTH_FAILED
                 if auth == Auth.ADMIN and not client.get("admin"):
                     return self._ADMIN_REQUIRED
+
+                # Block if rotation in progress (2 tokens) unless this is a rotation endpoint
+                if not rotation_ok:
+                    tokens = client.get("tokens")
+                    if tokens is not None and len(tokens) > 1:
+                        return _ROTATION_BLOCKED
 
             # Rate limit
             if rate_limit:
@@ -1307,11 +1365,10 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
     _VALID_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
 
     def _authenticate(self) -> Optional[dict]:
-        """Parse Bearer client_id:client_secret, verify against salted hash, return client info or None.
+        """Parse Bearer client_id:client_secret, verify against token list, return client info or None.
 
-        TODO: credential rotation — option for auto-renew after configurable timeout,
-        option to set the renewal period (e.g. 30 days). On rotation, old secret stays
-        valid for a grace period while the new one is issued.
+        Supports both legacy format (flat salt/secret_hash) and new format (tokens list).
+        The returned dict includes '_client_secret' for re-verification under lock.
         """
         auth_header = self.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -1328,9 +1385,14 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         client = ACTIVE_SERVER_CLIENTS.get(client_id)
         if not client:
             return None
-        expected = hashlib.sha256((client["salt"] + client_secret).encode()).hexdigest()
-        if hmac.compare_digest(client["secret_hash"], expected):
-            return {"client_id": client_id, **client}
+        tokens = client.get("tokens")
+        if tokens is None:
+            # Legacy format: flat salt/secret_hash
+            tokens = [{"salt": client["salt"], "secret_hash": client["secret_hash"]}]
+        for i, tok in enumerate(tokens):
+            expected = hashlib.sha256((tok["salt"] + client_secret).encode()).hexdigest()
+            if hmac.compare_digest(tok["secret_hash"], expected):
+                return {"client_id": client_id, "_client_secret": client_secret, **client}
         return None
 
     _AUTH_FAILED = (HTTPStatus.UNAUTHORIZED, {"error": "Invalid credentials"})
@@ -1645,8 +1707,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
                     if client_id in clients:
                         return HTTPStatus.CONFLICT, {"error": "client_id already exists"}
                     clients[client_id] = {
-                        "salt": salt,
-                        "secret_hash": secret_hash,
+                        "tokens": [{"salt": salt, "secret_hash": secret_hash}],
                         "admin": False,
                         "name": name,
                         "registered": datetime.now().isoformat(),
@@ -1659,6 +1720,76 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
 
         except (json.JSONDecodeError, KeyError):
             return HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"}
+
+    @_route("POST", "/api/token/start-client-rotation", auth=Auth.REGULAR, rate_limit=True, rotation_ok=True)
+    def _handle_start_client_rotation(self, client=None, body=None):
+        """Start token rotation: generate a new token and append it to the client's token list.
+
+        Fails if already in rotation (2 tokens) — the client must complete first.
+        Returns the new secret so the client can save it.
+        """
+        client_id = client["client_id"]
+        new_secret = secrets.token_hex(32)
+        salt = secrets.token_hex(16)
+        secret_hash = hashlib.sha256((salt + new_secret).encode()).hexdigest()
+        new_token_entry = {"salt": salt, "secret_hash": secret_hash}
+
+        try:
+            with _config_locked() as config:
+                clients = _get_clients_from_config(config)
+                if client_id not in clients:
+                    return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
+                entry = clients[client_id]
+                tokens = entry.get("tokens")
+                if tokens is None:
+                    # Migrate legacy format
+                    tokens = [{"salt": entry.pop("salt"), "secret_hash": entry.pop("secret_hash")}]
+                if len(tokens) >= 2:
+                    return _ROTATION_BLOCKED
+                tokens.append(new_token_entry)
+                entry["tokens"] = tokens
+        except ConfigError as exc:
+            logger.error("Failed to start rotation for %s: %s", client_id, exc)
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Failed to persist rotation"}
+
+        return HTTPStatus.OK, {"success": True, "client_id": client_id, "new_secret": new_secret}
+
+    @_route("POST", "/api/token/complete-client-rotation", auth=Auth.REGULAR, rotation_ok=True)
+    def _handle_complete_client_rotation(self, client=None, body=None):
+        """Complete token rotation: keep only the token that authenticated this request.
+
+        The token used in the Authorization header is the one that survives.
+        Idempotent: if already down to 1 token, this is a no-op success.
+        """
+        client_id = client["client_id"]
+        client_secret = client["_client_secret"]
+
+        try:
+            with _config_locked() as config:
+                clients = _get_clients_from_config(config)
+                if client_id not in clients:
+                    return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
+                entry = clients[client_id]
+                tokens = entry.get("tokens")
+                if tokens is None:
+                    # Migrate legacy format to tokens list
+                    entry["tokens"] = [{"salt": entry.pop("salt"), "secret_hash": entry.pop("secret_hash")}]
+                    return HTTPStatus.OK, {"success": True, "client_id": client_id}
+                if len(tokens) == 1:
+                    return HTTPStatus.OK, {"success": True, "client_id": client_id}
+                # Re-verify which token matches under the lock (index may be stale)
+                for i, tok in enumerate(tokens):
+                    expected = hashlib.sha256((tok["salt"] + client_secret).encode()).hexdigest()
+                    if hmac.compare_digest(tok["secret_hash"], expected):
+                        entry["tokens"] = [tok]
+                        break
+                else:
+                    return self._AUTH_FAILED
+        except ConfigError as exc:
+            logger.error("Failed to complete rotation for %s: %s", client_id, exc)
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Failed to persist rotation"}
+
+        return HTTPStatus.OK, {"success": True, "client_id": client_id}
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
@@ -2168,6 +2299,209 @@ def delete_client_cmd(server_url: str, target_client_id: str, auth_token: str):
         return False
 
 
+def _rotation_request(server_url: str, endpoint: str, auth_token: str):
+    """POST to a rotation endpoint. Returns parsed JSON response."""
+    url = f"{server_url.rstrip('/')}{endpoint}"
+    headers = {"Authorization": f"Bearer {auth_token}", "Content-Length": "0"}
+    req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
+    with urllib.request.urlopen(req) as response:
+        return json.loads(response.read().decode())
+
+
+def start_client_rotation(server_url: str, auth_token: str):
+    """Call start-client-rotation endpoint. Returns new_secret or None."""
+    result = _rotation_request(server_url, "/api/token/start-client-rotation", auth_token)
+    return result.get("new_secret")
+
+
+def complete_client_rotation(server_url: str, auth_token: str):
+    """Call complete-client-rotation endpoint. Returns True on success."""
+    result = _rotation_request(server_url, "/api/token/complete-client-rotation", auth_token)
+    return result.get("success", False)
+
+
+def _resolve_server_name(args):
+    """Resolve server name from args or config default."""
+    server_name = getattr(args, "server", None)
+    if not server_name:
+        config = load_config()
+        if config:
+            server_name = config.get("default-server")
+    return server_name
+
+
+def _get_all_local_secrets(server_name):
+    """Read all client secrets from local config for a server, oldest first."""
+    config = load_config()
+    if not config or not server_name:
+        return []
+    servers = config.get("servers", {})
+    if server_name not in servers:
+        return []
+    entry = servers[server_name]
+    csecrets = entry.get("client-secrets")
+    if csecrets and isinstance(csecrets, list):
+        return list(csecrets)
+    csecret = entry.get("client-secret")
+    if csecret:
+        return [csecret]
+    return []
+
+
+def _save_secrets(server_name, secrets_list):
+    """Write client-secrets list to local config for a server. Raises ConfigWriteError if server not found."""
+    with _config_locked() as config:
+        servers = config.get("servers", {})
+        if not server_name or server_name not in servers:
+            raise ConfigWriteError(f"Server '{server_name}' not found in config")
+        entry = servers[server_name]
+        entry["client-secrets"] = secrets_list
+        entry.pop("client-secret", None)
+
+
+def rotate_cmd(args):
+    """Full token rotation: start rotation, save new secret, complete rotation.
+
+    Requires exactly 1 local secret. If local config has 2 secrets (interrupted
+    previous rotation), use complete-rotation instead.
+
+    Handles the case where the server already has 2 tokens (409 on start) by
+    completing the stale rotation with our single secret first.
+    """
+    server_url, auth_token = resolve_server(args)
+    if not auth_token:
+        print("Error: Credentials required to rotate.", file=sys.stderr)
+        sys.exit(1)
+
+    server_name = _resolve_server_name(args)
+    config = load_config()
+    client_id = config["servers"][server_name].get("client-id") if config else None
+    if not client_id:
+        print("Error: No client-id found in config.", file=sys.stderr)
+        sys.exit(1)
+    all_secrets = _get_all_local_secrets(server_name)
+
+    if len(all_secrets) > 1:
+        print("Error: Local config has multiple secrets — a previous rotation was interrupted.", file=sys.stderr)
+        print("   Run 'companion complete-rotation' to resolve it first.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        # Step 1: Start rotation — server generates new token
+        print("🔄 Starting token rotation...")
+        try:
+            new_secret = start_client_rotation(server_url, auth_token)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                # Server already has 2 tokens — stale rotation from a previous run.
+                # Complete it with our single secret, then tell user to re-run.
+                print("⚠️  Stale rotation on server. Completing with current secret...")
+                complete_client_rotation(server_url, auth_token)
+                print("✅ Stale rotation completed.")
+                print("   Run 'companion rotate' again to start a fresh rotation.")
+                sys.exit(0)
+            raise
+
+        if not new_secret:
+            print("❌ Failed to start rotation: no new secret returned", file=sys.stderr)
+            sys.exit(1)
+
+        # Step 2: Save both secrets locally (old + new)
+        old_secret = auth_token.split(":", 1)[1]
+        try:
+            _save_secrets(server_name, [old_secret, new_secret])
+        except ConfigWriteError as exc:
+            print(f"❌ Failed to save new secret locally: {exc}", file=sys.stderr)
+            logger.debug("New secret: %s", new_secret)
+            print("   Save it manually and run 'companion complete-rotation' to finish.", file=sys.stderr)
+            sys.exit(1)
+
+        # Step 3: Complete rotation — tell server to drop old token
+        new_auth_token = f"{client_id}:{new_secret}"
+        print("🔄 Completing rotation...")
+        complete_client_rotation(server_url, new_auth_token)
+
+        # Step 4: Update local config to keep only the new secret
+        try:
+            _save_secrets(server_name, [new_secret])
+        except ConfigWriteError as exc:
+            print(f"⚠️  Rotation completed on server but local cleanup failed: {exc}", file=sys.stderr)
+            print("   Run 'companion complete-rotation' to clean up.", file=sys.stderr)
+            sys.exit(1)
+
+        print("✅ Token rotation complete!")
+        logger.debug("New secret: %s", new_secret)
+        print("   The old secret has been revoked.")
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        try:
+            error_json = json.loads(error_body)
+            print(f"❌ Rotation failed: {error_json.get('error', 'Unknown error')}")
+        except (json.JSONDecodeError, KeyError):
+            print(f"❌ Rotation failed: HTTP {e.code}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Rotation failed: {e}")
+        sys.exit(1)
+
+
+def complete_rotation_cmd(args):
+    """Complete an interrupted rotation: try each local secret, converge to 1.
+
+    Requires exactly 2 local secrets. Tries each against the server (last first,
+    since it's the newest). The first secret that authenticates wins — completes
+    server-side rotation with it and saves only that secret locally.
+    """
+    server_url, _ = resolve_server(args)
+    if not server_url:
+        print("Error: Server URL required.", file=sys.stderr)
+        sys.exit(1)
+
+    server_name = _resolve_server_name(args)
+    all_secrets = _get_all_local_secrets(server_name)
+    config = load_config()
+    client_id = config["servers"][server_name].get("client-id") if config else None
+
+    if not client_id:
+        print("Error: No client-id found in config.", file=sys.stderr)
+        sys.exit(1)
+
+    if len(all_secrets) < 2:
+        print("Error: Local config has only 1 secret — nothing to complete.", file=sys.stderr)
+        print("   Run 'companion rotate' to start a new rotation.", file=sys.stderr)
+        sys.exit(1)
+
+    print("🔄 Completing interrupted rotation...")
+
+    # Try each secret, newest (last) first
+    for s in reversed(all_secrets):
+        token = f"{client_id}:{s}"
+        try:
+            complete_client_rotation(server_url, token)
+            _save_secrets(server_name, [s])
+            print("✅ Rotation completed!")
+            logger.debug("Surviving secret: %s", s)
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                continue  # This secret doesn't match any server token
+            error_body = e.read().decode()
+            try:
+                error_json = json.loads(error_body)
+                print(f"❌ Completion failed: {error_json.get('error', 'Unknown error')}")
+            except (json.JSONDecodeError, KeyError):
+                print(f"❌ Completion failed: HTTP {e.code}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Completion failed: {e}")
+            sys.exit(1)
+
+    print("❌ No local secret matches any server token.", file=sys.stderr)
+    print("   You may need new credentials from your admin.", file=sys.stderr)
+    sys.exit(1)
+
+
 def server_setup_cmd(args):
     """First-time server setup. Writes admin client to config.
 
@@ -2245,8 +2579,7 @@ def server_setup_cmd(args):
             entry["url"] = url
             clients = entry.setdefault("clients", {})
             clients[client_id] = {
-                "salt": salt,
-                "secret_hash": secret_hash,
+                "tokens": [{"salt": salt, "secret_hash": secret_hash}],
                 "admin": True,
                 "name": client_name,
                 "registered": datetime.now().isoformat(),
@@ -2254,7 +2587,7 @@ def server_setup_cmd(args):
             if "default-server" not in cfg:
                 cfg["default-server"] = server_name
             entry["client-id"] = client_id
-            entry["client-secret"] = client_secret
+            entry["client-secrets"] = [client_secret]
     except ConfigWriteError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -2325,8 +2658,7 @@ def server_add_user_cmd(args):
                 print(f"Error: Client '{client_id}' already exists on server '{server_name}'.", file=sys.stderr)
                 sys.exit(1)
             clients[client_id] = {
-                "salt": salt,
-                "secret_hash": secret_hash,
+                "tokens": [{"salt": salt, "secret_hash": secret_hash}],
                 "admin": is_admin,
                 "name": client_name,
                 "registered": datetime.now().isoformat(),
@@ -2386,7 +2718,7 @@ def connect_cmd(args):
             servers[server_name] = {
                 "url": url,
                 "client-id": client_id,
-                "client-secret": client_secret,
+                "client-secrets": [client_secret],
             }
             if "default-server" not in config:
                 config["default-server"] = server_name
@@ -2446,7 +2778,10 @@ def register_cmd(args):
 
 COMMAND_GROUPS = [
     ("Server", ["server", "server-setup", "server-add-user"]),
-    ("Client", ["connect", "upload", "download", "list", "set-preview", "get-pad", "set-pad"]),
+    (
+        "Client",
+        ["connect", "upload", "download", "list", "set-preview", "get-pad", "set-pad", "rotate", "complete-rotation"],
+    ),
     ("Admin", ["register", "clients", "delete-client"]),
 ]
 
@@ -2574,6 +2909,12 @@ def main():
     delete_client_parser = subparsers.add_parser("delete-client", help="Delete a registered client (admin only)")
     delete_client_parser.add_argument("client_id_to_delete", help="Client ID to delete")
     add_server_args(delete_client_parser, needs_auth=True)
+    # Rotate mode
+    rotate_parser = subparsers.add_parser("rotate", help="Rotate your client credentials")
+    add_server_args(rotate_parser, needs_auth=True)
+    # Complete rotation mode
+    complete_rotation_parser = subparsers.add_parser("complete-rotation", help="Complete an interrupted rotation")
+    add_server_args(complete_rotation_parser, needs_auth=True)
     # Build grouped help and attach as epilog
     parser.epilog = _build_grouped_help(subparsers)
     # Remove the empty positional arguments section from output
@@ -2675,6 +3016,10 @@ def main():
             sys.exit(1)
         success = delete_client_cmd(server_url, args.client_id_to_delete, auth_token)
         sys.exit(0 if success else 1)
+    elif args.mode == "rotate":
+        rotate_cmd(args)
+    elif args.mode == "complete-rotation":
+        complete_rotation_cmd(args)
 
 
 if __name__ == "__main__":
