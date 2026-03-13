@@ -5,6 +5,7 @@ E2E tests for token rotation endpoints and blocking logic.
 
 import contextlib
 import hashlib
+import io
 import json
 import secrets
 import sys
@@ -524,12 +525,16 @@ class _RotateCmdTestBase(unittest.TestCase):
         """Run a rotate/complete command with mocked config.
 
         Returns (exit_code, final_client_secrets).
+        Captured stdout+stderr is stored in self._captured_output.
         """
         config = self._build_config(local_secrets)
+        captured = io.StringIO()
 
         with patch("companion.load_config", return_value=config), patch(
             "companion._config_locked", lambda: _fake_config_locked(config)
-        ), patch.object(companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None):
+        ), patch.object(companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None), patch(
+            "sys.stdout", captured
+        ), patch("sys.stderr", captured):
             try:
                 mock_args = type("Args", (), {"server": self.server_name, "url": None, "auth_token": None})()
                 cmd_func(mock_args)
@@ -537,6 +542,7 @@ class _RotateCmdTestBase(unittest.TestCase):
             except SystemExit as e:
                 exit_code = e.code if e.code is not None else 0
 
+            self._captured_output = captured.getvalue()
             final_secrets = config["servers"][self.server_name].get("client-secrets", [])
             return exit_code, final_secrets
 
@@ -554,6 +560,14 @@ class _RotateCmdTestBase(unittest.TestCase):
     def _assert_failure(self, exit_code):
         """Assert command failed."""
         self.assertEqual(exit_code, 1, "command should fail")
+
+    def _assert_secret_authenticates(self, secret):
+        """Assert the given secret can authenticate against the server."""
+        token = f"{self.client_id}:{secret}"
+        url = f"{self.base_url}/api/files"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
 
 
 class TestRotateCmd(_RotateCmdTestBase):
@@ -589,22 +603,42 @@ class TestRotateCmd(_RotateCmdTestBase):
     # ── Server has 2 tokens (stale rotation) ──
 
     def test_server_has_invalid_ours(self):
-        """Server=[invalid, ours]. 409 on start — complete with ours, then re-run would rotate."""
+        """Server=[invalid, ours]. 409 — resolves incomplete rotation, asks to rotate again."""
         previous = secrets.token_hex(32)
         self._reset_server_client(previous)
         ours = self._start_server_rotation(f"{self.client_id}:{previous}")
         # Now server has [previous, ours]. Local only has [ours].
         exit_code, final = self._run([ours])
-        self._assert_success_with_valid_secret(exit_code, final)
+        self._assert_failure(exit_code)
+        self.assertEqual(final[0], ours)
+        self.assertIn("Previous rotation was incomplete", self._captured_output)
+        self.assertIn("Please run 'companion rotate' again", self._captured_output)
+        # Our secret should still authenticate against the server
+        self._assert_secret_authenticates(ours)
 
     def test_server_has_ours_invalid(self):
-        """Server=[ours, invalid]. 409 on start — complete with ours."""
+        """Server=[ours, invalid]. 409 — resolves incomplete rotation, asks to rotate again."""
         ours = secrets.token_hex(32)
         self._reset_server_client(ours)
         _next = self._start_server_rotation(f"{self.client_id}:{ours}")
         # Now server has [ours, next]. Local only has [ours].
         exit_code, final = self._run([ours])
-        self._assert_success_with_valid_secret(exit_code, final)
+        self._assert_failure(exit_code)
+        self.assertEqual(final[0], ours)
+        self.assertIn("Previous rotation was incomplete", self._captured_output)
+        self.assertIn("Please run 'companion rotate' again", self._captured_output)
+        # Our secret should still authenticate against the server
+        self._assert_secret_authenticates(ours)
+
+    def test_server_has_invalid_invalid(self):
+        """Server=[invalid, invalid]. 409 on start — complete fails, nice error."""
+        other1 = secrets.token_hex(32)
+        self._reset_server_client(other1)
+        _other2 = self._start_server_rotation(f"{self.client_id}:{other1}")
+        # Server has [other1, other2]. Local has [ours] which matches neither.
+        ours = secrets.token_hex(32)
+        exit_code, _final = self._run([ours])
+        self._assert_failure(exit_code)
 
     # ── Rejects 2 local secrets ──
 

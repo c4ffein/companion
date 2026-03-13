@@ -1542,12 +1542,11 @@ def rotate_cmd(args):
         except urllib.error.HTTPError as e:
             if e.code == 409:
                 # Server already has 2 tokens — stale rotation from a previous run.
-                # Complete it with our single secret, then tell user to re-run.
-                print("⚠️  Stale rotation on server. Completing with current secret...")
+                # Complete it with our single secret, then ask user to rotate again.
                 complete_client_rotation(server_url, auth_token)
-                print("✅ Stale rotation completed.")
-                print("   Run 'companion rotate' again to start a fresh rotation.")
-                sys.exit(0)
+                print("⚠️  Previous rotation was incomplete. Resolved it, but did not rotate.")
+                print("   Please run 'companion rotate' again.")
+                sys.exit(1)
             raise
 
         if not new_secret:
