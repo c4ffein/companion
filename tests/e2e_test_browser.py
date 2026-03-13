@@ -149,10 +149,9 @@ def test_auth_flow(page, script, url, env):
 
     # Verify /api/files now returns 200
     api_result = page.evaluate("""async () => {
-        const clientId = localStorage.getItem('companion_client_id');
-        const clientSecret = localStorage.getItem('companion_client_secret');
+        const auth = JSON.parse(localStorage.getItem('companion_auth') || '{}');
         const resp = await fetch('/api/files', {
-            headers: { 'Authorization': 'Bearer ' + clientId + ':' + clientSecret }
+            headers: { 'Authorization': 'Bearer ' + auth.clientId + ':' + auth.clientSecret }
         });
         return { status: resp.status, ok: resp.ok };
     }""")

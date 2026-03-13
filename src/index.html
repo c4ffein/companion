@@ -175,6 +175,10 @@
         <div style="margin-bottom: 15px;">
             <button id="saveCredsBtn">Save Credentials</button>
         </div>
+        <div style="margin-bottom: 15px;">
+            <button id="rotateTokenBtn" class="btn-secondary">Rotate Token</button>
+            <span id="rotateStatus" style="margin-left: 10px; font-size: 14px;"></span>
+        </div>
         <div id="settingsStatus"></div>
         <h2 style="margin-top: 30px;">Theme</h2>
         <div class="theme-selector">
@@ -738,66 +742,143 @@
             }
         }
 
-        function saveCredentials(clientId, clientSecret) {
-            try {
-                localStorage.setItem('companion_client_id', clientId);
-                localStorage.setItem('companion_client_secret', clientSecret);
-            } catch (e) {
-                showStorageError('set', e);
-            }
+        function saveAuth(auth) {
+            try { localStorage.setItem('companion_auth', JSON.stringify(auth)); } catch (e) { showStorageError('set', e); }
         }
 
-        function loadCredentials() {
+        function loadAuth() {
             try {
-                return {
-                    clientId: localStorage.getItem('companion_client_id') || '',
-                    clientSecret: localStorage.getItem('companion_client_secret') || ''
-                };
-            } catch (e) {
-                showStorageError('get', e);
-                return { clientId: '', clientSecret: '' };
-            }
+                const raw = localStorage.getItem('companion_auth');
+                if (raw) return JSON.parse(raw);
+            } catch (e) { showStorageError('get', e); }
+            return { clientId: '', clientSecret: '', newSecret: null };
         }
 
         function getAuthHeader() {
-            const creds = loadCredentials();
-            if (creds.clientId && creds.clientSecret) {
-                return 'Bearer ' + creds.clientId + ':' + creds.clientSecret;
+            const auth = loadAuth();
+            if (auth.clientId && auth.clientSecret) {
+                return 'Bearer ' + auth.clientId + ':' + auth.clientSecret;
             }
             return '';
         }
 
-        // Rotation pause state: when server returns 409 with the rotation error,
-        // show a modal and attempt to complete rotation automatically.
-        // Each device has its own client_id/secret pair, so auto-completing
-        // rotation here only affects this device's credentials — it cannot
-        // interfere with another device's in-progress rotation.
-        let rotationToastTimer = null;
+        // Debounce rotation requests so multiple 409s or rapid clicks
+        // don't spam the rotation endpoints.
+        let lastRotationAt = 0;
+        const ROTATION_DEBOUNCE_MS = 3000;
 
-        // Minimal implementation: only resolves rotation if the user has a valid token (for now).
-        function handleRotationBlocked() {
-            // Debounce: only show toast after 300ms of sustained blocking
-            if (rotationToastTimer) return;
-            rotationToastTimer = setTimeout(async () => {
-                // Try to complete rotation with our current secret
-                const authHeader = getAuthHeader();
-                if (authHeader) {
-                    try {
-                        const resp = await fetch('/api/token/complete-client-rotation', {
-                            method: 'POST',
-                            headers: { 'Authorization': authHeader, 'Content-Length': '0' }
-                        });
-                        if (resp.ok) {
-                            rotationToastTimer = null;
-                            return; // Rotation completed — carry on
-                        }
-                    } catch (e) { /* fall through to show toast */ }
+        function rotationDebounced() {
+            return (Date.now() - lastRotationAt) < ROTATION_DEBOUNCE_MS;
+        }
+
+        async function rotateToken() {
+            if (rotationDebounced()) return;
+            const auth = loadAuth();
+            if (!auth.clientId || !auth.clientSecret) {
+                showSettingsStatus('No credentials configured', true);
+                return;
+            }
+            lastRotationAt = Date.now();
+            const btn = document.getElementById('rotateTokenBtn');
+            const status = document.getElementById('rotateStatus');
+            btn.disabled = true;
+            status.textContent = 'Rotating...';
+            status.style.color = 'var(--text-secondary)';
+
+            try {
+                const authHeader = 'Bearer ' + auth.clientId + ':' + auth.clientSecret;
+
+                // Step 1: Start rotation
+                const startResp = await fetch('/api/token/start-client-rotation', {
+                    method: 'POST',
+                    headers: { 'Authorization': authHeader, 'Content-Length': '0' }
+                });
+                if (!startResp.ok) {
+                    const err = await startResp.json().catch(() => ({}));
+                    if (startResp.status === 409) {
+                        await recoverRotation();
+                        status.textContent = 'Previous rotation recovered. Click again to rotate.';
+                        status.style.color = 'var(--text-secondary)';
+                        btn.disabled = false;
+                        return;
+                    }
+                    throw new Error(err.error || 'HTTP ' + startResp.status);
                 }
-                // Could not complete — show the toast
+                const { new_secret } = await startResp.json();
+
+                // Step 2: Save newSecret atomically (commit point for crash recovery)
+                saveAuth({ ...auth, newSecret: new_secret });
+
+                // Step 3: Complete rotation with new secret
+                const newAuthHeader = 'Bearer ' + auth.clientId + ':' + new_secret;
+                const completeResp = await fetch('/api/token/complete-client-rotation', {
+                    method: 'POST',
+                    headers: { 'Authorization': newAuthHeader, 'Content-Length': '0' }
+                });
+                if (!completeResp.ok) {
+                    throw new Error('Failed to complete rotation');
+                }
+
+                // Step 4: Promote new secret, clear rotation state
+                saveAuth({ clientId: auth.clientId, clientSecret: new_secret, newSecret: null });
+                document.getElementById('settingsClientSecret').value = new_secret;
+
+                status.textContent = 'Rotated!';
+                status.style.color = 'var(--success-text)';
+                setTimeout(() => { status.textContent = ''; }, 3000);
+            } catch (e) {
+                status.textContent = 'Error: ' + e.message;
+                status.style.color = 'var(--error-text)';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function recoverRotation() {
+            if (rotationDebounced()) return false;
+            lastRotationAt = Date.now();
+            const auth = loadAuth();
+            if (!auth.clientId) return false;
+
+            if (auth.newSecret) {
+                // Try completing with the new secret first (it's the one we want to keep)
+                try {
+                    const resp = await fetch('/api/token/complete-client-rotation', {
+                        method: 'POST',
+                        headers: { 'Authorization': 'Bearer ' + auth.clientId + ':' + auth.newSecret, 'Content-Length': '0' }
+                    });
+                    if (resp.ok) {
+                        saveAuth({ clientId: auth.clientId, clientSecret: auth.newSecret, newSecret: null });
+                        document.getElementById('settingsClientSecret').value = auth.newSecret;
+                        return true;
+                    }
+                } catch (e) { /* fall through */ }
+            }
+
+            // No new secret, or it failed — try completing with current secret
+            if (auth.clientSecret) {
+                try {
+                    const resp = await fetch('/api/token/complete-client-rotation', {
+                        method: 'POST',
+                        headers: { 'Authorization': 'Bearer ' + auth.clientId + ':' + auth.clientSecret, 'Content-Length': '0' }
+                    });
+                    if (resp.ok) {
+                        saveAuth({ ...auth, newSecret: null });
+                        return true;
+                    }
+                } catch (e) { /* fall through */ }
+            }
+
+            return false;
+        }
+
+        async function handleRotationBlocked() {
+            const recovered = await recoverRotation();
+            if (!recovered) {
                 const toast = document.getElementById('rotationToast');
-                toast.textContent = 'Token rotation in progress — update your credentials in the Settings tab';
+                toast.textContent = 'Token rotation in progress — complete it from Settings';
                 toast.classList.add('show');
-            }, 300);
+            }
         }
 
         function authFetch(url, opts) {
@@ -834,17 +915,33 @@
                 return;
             }
 
-            saveCredentials(clientId, clientSecret);
+            saveAuth({ clientId, clientSecret, newSecret: null });
             document.getElementById('settingsNoAuth').style.display = 'none';
             showSettingsStatus('Credentials saved to browser storage');
         });
 
+        document.getElementById('rotateTokenBtn').addEventListener('click', rotateToken);
+
+        // Migrate old separate keys to single blob
+        const oldId = localStorage.getItem('companion_client_id');
+        const oldSecret = localStorage.getItem('companion_client_secret');
+        if (oldId || oldSecret) {
+            saveAuth({ clientId: oldId || '', clientSecret: oldSecret || '', newSecret: null });
+            localStorage.removeItem('companion_client_id');
+            localStorage.removeItem('companion_client_secret');
+        }
+
         // Load saved credentials into settings fields on page load
-        const savedCreds = loadCredentials();
-        if (savedCreds.clientId) {
+        const savedAuth = loadAuth();
+        if (savedAuth.clientId) {
             document.getElementById('settingsNoAuth').style.display = 'none';
-            document.getElementById('settingsClientId').value = savedCreds.clientId;
-            document.getElementById('settingsClientSecret').value = savedCreds.clientSecret;
+            document.getElementById('settingsClientId').value = savedAuth.clientId;
+            document.getElementById('settingsClientSecret').value = savedAuth.clientSecret;
+        }
+
+        // Page-load crash recovery
+        if (savedAuth.newSecret) {
+            recoverRotation();
         }
 
         // Load files on page load
