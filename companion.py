@@ -83,7 +83,10 @@ _INDEX_HTML = """<!DOCTYPE html>
 <head>
     <title>Companion</title>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- maximum-scale=1 suppresses iOS's auto-zoom when an input is focused (text <16px would
+         otherwise trigger a zoom). iOS still honors this for auto-zoom even though it ignores it
+         for *manual* pinch — pinch is disabled separately via touch-action in the CSS below. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
     <link rel="modulepreload" href="/deps/pdf.min.mjs">
     <style>
         [data-theme="light"] {
@@ -128,6 +131,10 @@ _INDEX_HTML = """<!DOCTYPE html>
             --nav-bg: #000000; --nav-hover: #111111; --nav-active-bg: #000000;
             --progress-bg: #222222;
         }
+        /* Block pinch / double-tap zoom: iOS ignores maximum-scale for *manual* zoom, so we
+           disable it here in CSS (which iOS does honor). Vertical/horizontal panning still works.
+           Focus auto-zoom is handled separately by maximum-scale=1 in the viewport meta. */
+        * { touch-action: pan-x pan-y; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 40px auto 80px; padding: 0 20px; background: var(--bg-body); color: var(--text-primary); }
         h1 { color: var(--text-primary); }
         .tab-content { display: none; background: var(--bg-card); padding: 20px; border-radius: 8px; box-shadow: var(--shadow-card); }
@@ -229,7 +236,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 
     <div id="padTab" class="tab-content">
         <h2>Shared Pad</h2>
-        <textarea id="padContent" placeholder="Type or paste text here to share between devices..." style="width: 100%; height: 400px; padding: 10px; border: 1px solid var(--border-input); border-radius: 4px; font-family: monospace; font-size: 14px; resize: vertical; box-sizing: border-box;"></textarea>
+        <textarea id="padContent" placeholder="Type or paste text here to share between devices..." autocapitalize="off" autocorrect="off" spellcheck="false" style="width: 100%; height: 50vh; padding: 10px; border: 1px solid var(--border-input); border-radius: 4px; font-family: monospace; font-size: 14px; resize: vertical; box-sizing: border-box;"></textarea>
         <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
             <div id="padStatus" style="font-size: 12px; color: var(--text-secondary);"></div>
             <div style="font-size: 12px; color: var(--text-tertiary);">
