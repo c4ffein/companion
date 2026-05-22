@@ -54,9 +54,9 @@ base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01234567
   (count := len([line for line in lines if line.startswith(var)])), \
   (print(f'❌ Found {count} lines starting with {var}, expected exactly 1') or sys.exit(1)) if count != 1 else None, \
   (matching := [line for line in lines if line.startswith(var)][0]), \
-  (prefix := f'{var} = \"'), \
+  (prefix := f'{var} = base64.b64decode(\"'), \
   (print(f'❌ {var} line must start with {repr(prefix)}') or sys.exit(1)) if not matching.startswith(prefix) else None, \
-  (print(f'❌ {var} line must end with \";\"') or sys.exit(1)) if not matching.endswith('\";') else None, \
+  (print(f'❌ {var} line must end with \")\"') or sys.exit(1)) if not matching.endswith('\")') else None, \
   (content := matching[len(prefix):-2]), \
   (print(f'❌ {var} contains invalid base64 characters') or print(f'   Got: {content[:80]}...') or sys.exit(1)) if not all(c in base64_chars for c in content) else None, \
   print(f'✅ {var} format valid')) \
