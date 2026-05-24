@@ -17,6 +17,7 @@ Usage:
     Server:        python companion.py server [--port PORT] [--server NAME]
     Server setup:  python companion.py server-setup [--server NAME] [--url URL]
     Add user:      python companion.py server-add-user [--name NAME] [--admin]
+    State servers: python companion.py list-state-servers
     Upload:        python companion.py upload <file_path> [--set-preview]
     Download:      python companion.py download <filename> [-o DIR]
     List files:    python companion.py list
@@ -40,6 +41,32 @@ Config file (~/.config/companion/config.json) — declarative, read-only at runt
 State dir (~/.local/state/companion, or $XDG_STATE_HOME, or COMPANION_STATE_DIR) — mutable:
     Per-server client database at servers/<name>/clients.json (registered clients,
     token hashes, rotation state). Server-owned; never written to the config file.
+
+Example config.json (annotated; '#' marks role, strip for valid JSON):
+    {
+      "default-server": "main",                 # both — picks the active server
+      "state-dir": "/var/lib/companion",        # server — overrides default state location
+      "servers": {
+        "main": {
+          "url": "http://localhost:8080",       # both — server reads :port, client dials it
+          "client-id": "admin-id",              # client — CLI's outgoing identity
+          "client-secrets": ["admin-secret"]    # client — list (newest last) for rotation
+        }
+      }
+    }
+    Minimal *server-only* config: just default-server + servers.<name>.url
+    (the admin client lives in the state dir, not here).
+    Minimal *client-only* config: servers.<name>.{url, client-id, client-secrets}.
+
+Example environment (works alongside config.json, or fully replaces it):
+    COMPANION_CONFIG=/etc/companion/config.json     # path to config.json
+    COMPANION_STATE_DIR=/data                       # mutable state location
+    COMPANION_PORT=8080                             # listen port (server mode)
+    COMPANION_DEFAULT_SERVER=main                   # named server to run as
+    COMPANION_BOOTSTRAP_ADMIN=admin-id:admin-secret # seed on first boot only
+    COMPANION_CORS_ORIGIN=*                         # CORS Access-Control-Allow-Origin
+    COMPANION_RATE_LIMIT_MAX=30                     # requests / 60s window / client
+    COMPANION_MAX_REQUEST_BODY=4294967296           # bytes; default = per-client limit
 """
 
 import argparse
@@ -2973,8 +3000,46 @@ def register_cmd(args):
     sys.exit(0 if new_client_id else 1)
 
 
+def list_state_servers_cmd(args):
+    """List server names that have a clients database in the state dir.
+
+    Useful when the state dir is decoupled from config (e.g. you migrated
+    state, or you're running on a fresh box with only the volume mounted).
+    """
+    state_servers_dir = get_state_dir() / "servers"
+    if not state_servers_dir.exists():
+        print(f"No state dir at {state_servers_dir}")
+        return
+    rows = []
+    for entry in sorted(state_servers_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        path = entry / "clients.json"
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                clients = json.load(f)
+            n = len(clients)
+            admins = sum(1 for c in clients.values() if c.get("admin"))
+            rows.append((entry.name, n, admins))
+        except (json.JSONDecodeError, OSError):
+            rows.append((entry.name, None, None))
+    if not rows:
+        print(f"No servers found in {state_servers_dir}")
+        return
+    print(f"State servers ({state_servers_dir}):")
+    for name, n, admins in rows:
+        if n is None:
+            print(f"  {name}  (clients.json unreadable)")
+        else:
+            client_word = "client" if n == 1 else "clients"
+            admin_word = "admin" if admins == 1 else "admins"
+            print(f"  {name}  ({n} {client_word}, {admins} {admin_word})")
+
+
 COMMAND_GROUPS = [
-    ("Server", ["server", "server-setup", "server-add-user"]),
+    ("Server", ["server", "server-setup", "server-add-user", "list-state-servers"]),
     (
         "Client",
         ["connect", "upload", "download", "list", "set-preview", "get-pad", "set-pad", "rotate", "complete-rotation"],
@@ -3046,6 +3111,8 @@ def main():
     add_user_parser.add_argument("--client-id", help="Client ID (auto-generated if blank)")
     add_user_parser.add_argument("--client-secret", help="Client secret (auto-generated if blank)")
     add_user_parser.add_argument("--interactive", action="store_true", help="Prompt for missing fields")
+    # List state servers (diagnostic: which server names have a clients DB on disk)
+    subparsers.add_parser("list-state-servers", help="List server names with a clients DB in the state dir")
     # Connect mode
     connect_parser = subparsers.add_parser("connect", help="Save server connection credentials locally")
     connect_parser.add_argument("--server", help="Server name (default: 'default')")
@@ -3126,6 +3193,8 @@ def main():
         server_setup_cmd(args)
     elif args.mode == "server-add-user":
         server_add_user_cmd(args)
+    elif args.mode == "list-state-servers":
+        list_state_servers_cmd(args)
     elif args.mode == "connect":
         connect_cmd(args)
     elif args.mode == "server":
