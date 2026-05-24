@@ -178,6 +178,7 @@ The build process:
 - Per-IP rate limiting on write endpoints (30 requests/60s sliding window)
 - Per-client storage caps (4GB default)
 - No HTTPS support (use a reverse proxy if needed)
+- Listens dual-stack on `[::]:<port>` — reachable from both IPv4 and IPv6 clients on the LAN
 - Not intended for production or internet-facing deployments
 - Only use on trusted networks with trusted users
 

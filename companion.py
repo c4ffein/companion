@@ -2294,39 +2294,47 @@ def run_server(port: int):
     """Run the file sharing server"""
 
     logger.debug(f"Starting server on port {port}...")
-    logger.debug(f"Binding to 0.0.0.0:{port}")
+    logger.debug(f"Binding to [::]:{port} (dual-stack IPv4+IPv6)")
 
-    server_address = ("0.0.0.0", port)
+    # Dual-stack: bind a single IPv6 socket with IPV6_V6ONLY=0 so it accepts
+    # both IPv6 clients and IPv4-mapped clients. Linux defaults to V6ONLY=0,
+    # but macOS/BSD/Windows default to 1, so we set it explicitly.
+    server_address = ("::", port)
 
     class FastHTTPServer(http.server.ThreadingHTTPServer):
         """ThreadingHTTPServer that skips slow getfqdn() call during binding and ensures socket reuse"""
 
+        address_family = socket.AF_INET6
         allow_reuse_address = True  # Enable SO_REUSEADDR for instant socket reuse
 
         def server_bind(self):
             """Override server_bind to avoid slow getfqdn() call on macOS/Windows"""
-            import socket
-
             logger.debug("Binding socket...")
             # Explicitly set SO_REUSEADDR to allow immediate port reuse
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Accept both IPv6 and IPv4-mapped connections on the same socket.
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except (OSError, AttributeError):
+                # Kernel/Python without dual-stack support; carry on as v6-only.
+                logger.debug("IPV6_V6ONLY=0 not supported; serving IPv6 only")
             self.socket.bind(self.server_address)
             self.server_address = self.socket.getsockname()
             # Skip the slow socket.getfqdn() call - just use the host directly
             host, port = self.server_address[:2]
             self.server_name = host
             self.server_port = port
-            logger.debug(f"Socket bound to {host}:{port}")
+            logger.debug(f"Socket bound to [{host}]:{port}")
 
     logger.debug("Creating HTTPServer instance...")
     httpd = FastHTTPServer(server_address, FileShareHandler)
 
     client_count = len(ACTIVE_SERVER_CLIENTS)
     logger.debug("Server bound successfully")
-    logger.info(f"File sharing server running on http://0.0.0.0:{port}")
+    logger.info(f"File sharing server running on port {port} (IPv4+IPv6)")
     logger.info(f"Registered clients: {client_count}")
 
-    print(f"🚀 File sharing server running on http://0.0.0.0:{port}")
+    print(f"🚀 File sharing server running on port {port} (IPv4+IPv6)")
     print(f"👥 Registered clients: {client_count}")
     print(f"📝 Open http://localhost:{port} in your browser")
     print("Press Ctrl+C to stop\n")
