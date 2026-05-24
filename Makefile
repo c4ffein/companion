@@ -1,4 +1,4 @@
-.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check clean run build verify-build
+.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check clean run build verify-build docker-build docker-secret
 
 # Default target
 help:
@@ -15,6 +15,8 @@ help:
 	@echo "  make build        - Build companion.py with inlined PDF.js"
 	@echo "  make verify-build - Verify that companion.py matches src/companion.py"
 	@echo "  make run          - Start the server (default port 8080)"
+	@echo "  make docker-build - Rebuild companion.py and build the Docker image (companion:dev)"
+	@echo "  make docker-secret- Print a fresh hex secret for COMPANION_BOOTSTRAP_ADMIN"
 	@echo "  make clean        - Remove Python cache files"
 
 # Run tests on dev version (default)
@@ -109,6 +111,14 @@ verify-build:
 		echo "   Run 'make build' to rebuild."; \
 		exit 1; \
 	fi
+
+# Build the Docker image (always against a freshly-built companion.py)
+docker-build: build
+	docker build -t companion:latest .
+
+# Print a fresh hex secret suitable for COMPANION_BOOTSTRAP_ADMIN=<id>:<secret>
+docker-secret:
+	@python3 -c 'import secrets; print(secrets.token_hex(32))'
 
 # Clean up Python cache files and built file
 clean:
