@@ -13,11 +13,6 @@
 #
 # Subsequent runs reuse the admin already in the volume (the env var is ignored
 # once an admin exists), so it is safe to leave set.
-#
-# Managing the container with containerctl:
-#   containerctl ps
-#   containerctl logs <id> -f
-#   containerctl exec <id> python /app/companion.py rotate --server default
 
 FROM python:3.12-alpine
 
