@@ -15,12 +15,14 @@ Usage:
     Connect:       python companion.py connect --url URL --client-id ID --client-secret SECRET
     Rotate:        python companion.py rotate [--server NAME]
     Complete:      python companion.py complete-rotation [--server NAME]
+    Fingerprint:   python companion.py fingerprint --server-url https://...
     Register:      python companion.py register [--name NAME] [--interactive]
     Clients:       python companion.py clients
     Delete client: python companion.py delete-client <client_id>
 
 Config file (~/.config/companion/config.json) — declarative, read-only at runtime:
-    Holds default-server and per-server connection info (url, client-id, client-secrets).
+    Holds default-server, per-server connection info (url, client-id, client-secrets),
+    and per-server TLS settings (cert-sha256 pin, ca-cert, require-pin, insecure).
     All commands use default-server from config if available.
     Override with --server <name> or --server-url <url>.
     Env (COMPANION_CONFIG, COMPANION_STATE_DIR, COMPANION_PORT, COMPANION_DEFAULT_SERVER,
@@ -30,21 +32,31 @@ State dir (~/.local/state/companion, or $XDG_STATE_HOME, or COMPANION_STATE_DIR)
     Per-server client database at servers/<name>/clients.json (registered clients,
     token hashes, rotation state). Server-owned; never written to the config file.
 
+TLS — paranoid by default: the CLI refuses to connect over https without either
+    a pinned cert (cert-sha256) or `insecure: true`. To pin a new server, run
+    `companion fingerprint --server-url <https://...> --ca-cert <ca>` (or use
+    --insecure for pure TOFU), then paste the printed hex into cert-sha256.
+
 Example config.json (annotated; '#' marks role, strip for valid JSON):
     {
-      "default-server": "main",                 # both — picks the active server
-      "state-dir": "/var/lib/companion",        # server — overrides default state location
+      "default-server": "main",                  # both — picks the active server
+      "state-dir": "/var/lib/companion",         # server — overrides default state location
       "servers": {
         "main": {
-          "url": "http://localhost:8080",       # both — server reads :port, client dials it
-          "client-id": "admin-id",              # client — CLI's outgoing identity
-          "client-secrets": ["admin-secret"]    # client — list (newest last) for rotation
+          "url": "https://companion.example",    # both — server reads :port, client dials it
+          "client-id": "admin-id",               # client — CLI's outgoing identity
+          "client-secrets": ["admin-secret"],    # client — list (newest last) for rotation
+          "cert-sha256": "ab12...<64 hex>",      # client — pin server cert (defense in depth)
+          "ca-cert": "/etc/ssl/my-ca.pem",       # client — override system CA bundle (optional)
+          "require-pin": true,                   # client — refuse https w/o pin (default true)
+          "insecure": false                      # client — disable TLS verify (default false)
         }
       }
     }
     Minimal *server-only* config: just default-server + servers.<name>.url
     (the admin client lives in the state dir, not here).
-    Minimal *client-only* config: servers.<name>.{url, client-id, client-secrets}.
+    Minimal *client-only* config: servers.<name>.{url, client-id, client-secrets}
+    plus cert-sha256 (or require-pin=false / insecure=true) for any https URL.
 
 Example environment (works alongside config.json, or fully replaces it):
     COMPANION_CONFIG=/etc/companion/config.json     # path to config.json
@@ -55,6 +67,8 @@ Example environment (works alongside config.json, or fully replaces it):
     COMPANION_CORS_ORIGIN=*                         # CORS Access-Control-Allow-Origin
     COMPANION_RATE_LIMIT_MAX=30                     # requests / 60s window / client
     COMPANION_MAX_REQUEST_BODY=4294967296           # bytes; default = per-client limit
+    (TLS knobs above are per-server, so they live in config or as CLI flags:
+     --ca-cert, --cert-sha256, --insecure — not as env vars.)
 """
 
 import argparse
@@ -71,8 +85,24 @@ import logging
 import mimetypes
 import os
 import secrets
+import socket
+import ssl
 import sys
 import tempfile
+from hashlib import sha256
+from ssl import (
+    CERT_NONE,
+    CERT_REQUIRED,
+    PROTOCOL_TLS_CLIENT,
+    PROTOCOL_TLS_SERVER,
+    Purpose,
+    SSLCertVerificationError,
+    SSLContext,
+    SSLSocket,
+    _ASN1Object,
+    _ssl,
+)
+from sys import flags as sys_flags
 import time
 import urllib.parse
 import urllib.request
@@ -329,6 +359,159 @@ def _clients_locked(server_name: str):
     # Reached only on clean exit (write succeeded). Refresh the cache.
     if _ACTIVE_SERVER_NAME == server_name:
         ACTIVE_SERVER_CLIENTS = dict(clients)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Connection security (client → server).
+#
+# By default this CLI is paranoid: every https:// connection requires the
+# server's leaf certificate SHA-256 to be pinned in config (or via flag).
+# Defense in depth — even if the CA chain validates, a different cert from the
+# same CA is rejected. Bootstrap a new server with `companion fingerprint`.
+# The pinning primitive is ported from c4ffein/bank (make_pinned_ssl_context).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_INSECURE_WARNED = False  # one-shot per process; see _build_ssl_context
+
+
+class CertVerificationConfigError(Exception):
+    """Raised when an https connection is attempted without a pin and without --insecure."""
+
+
+def make_pinned_ssl_context(pinned_sha_256, cafile=None, capath=None, cadata=None):
+    """
+    Returns an instance of a subclass of SSLContext that uses a subclass of SSLSocket
+    that actually verifies the sha256 of the certificate during the TLS handshake
+    Tested with `python-version: [3.8, 3.9, 3.10, 3.11, 3.12, 3.13]`
+    Original code can be found at https://github.com/c4ffein/python-snippets
+    """
+
+    class PinnedSSLSocket(SSLSocket):
+        def check_pinned_cert(self):
+            der_cert_bin = self.getpeercert(True)
+            if sha256(der_cert_bin).hexdigest() != pinned_sha_256:
+                raise SSLCertVerificationError("Incorrect certificate checksum")
+
+        def do_handshake(self, *args, **kwargs):
+            r = super().do_handshake(*args, **kwargs)
+            self.check_pinned_cert()
+            return r
+
+    class PinnedSSLContext(SSLContext):
+        sslsocket_class = PinnedSSLSocket
+
+    def create_pinned_default_context(purpose=Purpose.SERVER_AUTH):
+        if not isinstance(purpose, _ASN1Object):
+            raise TypeError(purpose)
+        if purpose == Purpose.SERVER_AUTH:  # Verify certs and host name in client mode
+            context = PinnedSSLContext(PROTOCOL_TLS_CLIENT)
+            context.verify_mode, context.check_hostname = CERT_REQUIRED, True
+        elif purpose == Purpose.CLIENT_AUTH:
+            context = PinnedSSLContext(PROTOCOL_TLS_SERVER)
+        else:
+            raise ValueError(purpose)
+        context.verify_flags |= _ssl.VERIFY_X509_STRICT
+        if cafile or capath or cadata:
+            context.load_verify_locations(cafile, capath, cadata)
+        elif context.verify_mode != CERT_NONE:
+            context.load_default_certs(purpose)  # Try loading default system root CA certificates, may fail silently
+        if hasattr(context, "keylog_filename"):  # OpenSSL 1.1.1 keylog file
+            keylogfile = os.environ.get("SSLKEYLOGFILE")
+            if keylogfile and not sys_flags.ignore_environment:
+                context.keylog_filename = keylogfile
+        return context
+
+    return create_pinned_default_context()
+
+
+_VALID_SHA256_CHARS = frozenset("0123456789abcdef")
+
+
+def _resolve_security_setting(args, server_config, key, default=None):
+    """Per-key precedence: CLI flag (args.<key_attr>) > server_config[key] > default."""
+    attr = key.replace("-", "_")
+    cli_val = getattr(args, attr, None) if args is not None else None
+    if cli_val is not None:
+        return cli_val
+    if server_config and key in server_config:
+        return server_config[key]
+    return default
+
+
+def _build_ssl_context(url, args=None, server_config=None, *, allow_unpinned=False):
+    """Resolve TLS settings for *url* from args/config and return an SSLContext (or None for http).
+
+    Refuses https without a pin unless --insecure or *allow_unpinned* (used by the
+    fingerprint command, which by definition has no pin yet).
+    """
+    global _INSECURE_WARNED
+
+    if not url or urllib.parse.urlparse(url).scheme != "https":
+        return None  # plain http needs no TLS context
+
+    insecure = bool(_resolve_security_setting(args, server_config, "insecure", default=False))
+    if insecure:
+        if not _INSECURE_WARNED:
+            print(
+                "⚠️  --insecure: TLS verification disabled for this process. All certs will be accepted.",
+                file=sys.stderr,
+            )
+            _INSECURE_WARNED = True
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    require_pin = bool(_resolve_security_setting(args, server_config, "require-pin", default=True))
+    pinned_sha256 = _resolve_security_setting(args, server_config, "cert-sha256", default=None)
+    ca_cert = _resolve_security_setting(args, server_config, "ca-cert", default=None)
+
+    if pinned_sha256:
+        pinned_sha256 = pinned_sha256.lower().strip()
+        if len(pinned_sha256) != 64 or not all(c in _VALID_SHA256_CHARS for c in pinned_sha256):
+            raise CertVerificationConfigError(f"cert-sha256 must be 64 hex characters (got {len(pinned_sha256)})")
+
+    if require_pin and not pinned_sha256 and not allow_unpinned:
+        raise CertVerificationConfigError(
+            f"Refusing to connect to {url}: no cert-sha256 pinned and require-pin is on.\n"
+            f"   Run `companion fingerprint --server-url {url}` to get the hash,\n"
+            "   then set cert-sha256 in config (or pass --cert-sha256 <hex>),\n"
+            "   or pass --insecure to bypass for this run."
+        )
+
+    if pinned_sha256:
+        return make_pinned_ssl_context(pinned_sha256, cafile=ca_cert)
+    # Unpinned-but-strict: standard CA verification via stdlib (used when
+    # require-pin is explicitly off, or by the fingerprint cmd via allow_unpinned).
+    return ssl.create_default_context(cafile=ca_cert) if ca_cert else ssl.create_default_context()
+
+
+def _server_config_for(args) -> Optional[dict]:
+    """Lookup the config entry for the resolved server (used by ssl-context resolution)."""
+    server_name = getattr(args, "server", None)
+    config = load_config()
+    if not config:
+        return None
+    if not server_name:
+        server_name = config.get("default-server")
+    if not server_name:
+        return None
+    return config.get("servers", {}).get(server_name)
+
+
+def resolve_server_and_ssl(args) -> Tuple[str, Optional[str], Optional[ssl.SSLContext]]:
+    """resolve_server + build TLS context for the resolved URL.
+
+    Exits 1 on CertVerificationConfigError (e.g. https with no pin + no --insecure).
+    """
+    url, token = resolve_server(args)
+    try:
+        ctx = _build_ssl_context(url, args, _server_config_for(args))
+    except CertVerificationConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    return url, token, ctx
 
 
 def resolve_server(args) -> Tuple[str, Optional[str]]:
@@ -1176,7 +1359,7 @@ def run_server(port: int):
         httpd.server_close()
 
 
-def upload_file(server_url: str, file_path: str, auth_token: str, set_preview: bool = False):
+def upload_file(server_url: str, file_path: str, auth_token: str, set_preview: bool = False, ssl_context=None):
     """Upload a file to the server"""
     if not os.path.isfile(file_path):
         print(f"❌ Error: File not found: {file_path}")
@@ -1209,7 +1392,7 @@ def upload_file(server_url: str, file_path: str, auth_token: str, set_preview: b
         print(f"📤 Uploading {filename} ({len(file_content)} bytes)...")
         req = urllib.request.Request(url, data=body.getvalue(), headers=headers)
 
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             result = json.loads(response.read().decode())
             print("✅ Upload successful!")
             print(f"   Filename: {result['filename']}")
@@ -1218,7 +1401,7 @@ def upload_file(server_url: str, file_path: str, auth_token: str, set_preview: b
             # Auto-set preview if requested
             if set_preview:
                 print()
-                return set_preview_func(server_url, result["id"], auth_token)
+                return set_preview_func(server_url, result["id"], auth_token, ssl_context=ssl_context)
 
             return True
 
@@ -1235,7 +1418,7 @@ def upload_file(server_url: str, file_path: str, auth_token: str, set_preview: b
         return False
 
 
-def set_preview_func(server_url: str, file_id: str, auth_token: str):
+def set_preview_func(server_url: str, file_id: str, auth_token: str, ssl_context=None):
     """Set the current preview for all clients"""
     url = f"{server_url.rstrip('/')}/api/preview/set"
     headers = {
@@ -1248,7 +1431,7 @@ def set_preview_func(server_url: str, file_id: str, auth_token: str):
         print(f"📺 Setting preview to: {file_id}")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             result = json.loads(response.read().decode())
             print("✅ Preview set successfully!")
             print(f"   Filename: {result['filename']}")
@@ -1268,14 +1451,14 @@ def set_preview_func(server_url: str, file_id: str, auth_token: str):
         return False
 
 
-def list_files(server_url: str, auth_token: str):
+def list_files(server_url: str, auth_token: str, ssl_context=None):
     """List all available files on the server"""
     url = f"{server_url.rstrip('/')}/api/files"
     headers = {"Authorization": f"Bearer {auth_token}"}
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             files = json.loads(response.read().decode())
 
             if not files:
@@ -1330,13 +1513,13 @@ def sanitize_filename(filename: str) -> str:
     return "".join((c if c in SAFE_FILENAME_CHARS else "_") for c in filename.lower())
 
 
-def resolve_file_id(server_url: str, filename: str, auth_token: str) -> Optional[str]:
+def resolve_file_id(server_url: str, filename: str, auth_token: str, ssl_context=None) -> Optional[str]:
     """Resolve a filename to a file_id via the file list API, matching by normalized name."""
     url = f"{server_url.rstrip('/')}/api/files"
     normalized = sanitize_filename(filename)
     headers = {"Authorization": f"Bearer {auth_token}"}
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(req, context=ssl_context) as response:
         files = json.loads(response.read().decode())
     for f in files:
         if f["normalized_name"] == normalized:
@@ -1344,7 +1527,9 @@ def resolve_file_id(server_url: str, filename: str, auth_token: str) -> Optional
     return None
 
 
-def download_file(server_url: str, filename: str, auth_token: str, output_dir: Optional[str] = None) -> bool:
+def download_file(
+    server_url: str, filename: str, auth_token: str, output_dir: Optional[str] = None, ssl_context=None
+) -> bool:
     """Download a file from the server"""
     # Determine output directory
     if output_dir:
@@ -1364,7 +1549,7 @@ def download_file(server_url: str, filename: str, auth_token: str, output_dir: O
         return False
     # Resolve filename to file_id
     try:
-        file_id = resolve_file_id(server_url, filename, auth_token)
+        file_id = resolve_file_id(server_url, filename, auth_token, ssl_context=ssl_context)
     except Exception as e:
         print(f"❌ Failed to resolve file: {e}", file=sys.stderr)
         return False
@@ -1377,7 +1562,7 @@ def download_file(server_url: str, filename: str, auth_token: str, output_dir: O
     try:
         print(f"📥 Downloading {filename}...")
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             content = response.read()
             # Write to file
             with open(dest_path, "wb") as f:
@@ -1397,14 +1582,14 @@ def download_file(server_url: str, filename: str, auth_token: str, output_dir: O
         return False
 
 
-def get_pad(server_url: str, auth_token: str):
+def get_pad(server_url: str, auth_token: str, ssl_context=None):
     """Get the current pad content from the server"""
     url = f"{server_url.rstrip('/')}/api/pad"
     headers = {"Authorization": f"Bearer {auth_token}"}
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             result = json.loads(response.read().decode())
             content = result.get("content", "")
             if content:
@@ -1420,7 +1605,7 @@ def get_pad(server_url: str, auth_token: str):
         return False
 
 
-def set_pad(server_url: str, content: str, auth_token: str):
+def set_pad(server_url: str, content: str, auth_token: str, ssl_context=None):
     """Set the pad content on the server"""
     url = f"{server_url.rstrip('/')}/api/pad"
     headers = {
@@ -1431,7 +1616,7 @@ def set_pad(server_url: str, content: str, auth_token: str):
     try:
         print(f"📝 Setting pad content ({len(content)} characters)...")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             result = json.loads(response.read().decode())
             print("✅ Pad content updated successfully!")
             print(f"   Timestamp: {result['timestamp']}")
@@ -1456,6 +1641,7 @@ def register_client(
     auth_token: Optional[str] = None,
     new_client_id: Optional[str] = None,
     new_client_secret: Optional[str] = None,
+    ssl_context=None,
 ):
     """Register a new client with the server, save credentials to config."""
     if not auth_token:
@@ -1483,7 +1669,7 @@ def register_client(
     try:
         print(f"🔑 Registering client '{name}'...")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             result = json.loads(response.read().decode())
             is_admin = result.get("admin", False)
             print("✅ Registration successful!")
@@ -1505,14 +1691,14 @@ def register_client(
         return None, None
 
 
-def list_clients_cmd(server_url: str, auth_token: str):
+def list_clients_cmd(server_url: str, auth_token: str, ssl_context=None):
     """List registered clients on the server."""
     url = f"{server_url.rstrip('/')}/api/clients"
     headers = {"Authorization": f"Bearer {auth_token}"}
 
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             clients = json.loads(response.read().decode())
             if not clients:
                 print("👥 No clients registered")
@@ -1540,7 +1726,7 @@ def list_clients_cmd(server_url: str, auth_token: str):
         return False
 
 
-def delete_client_cmd(server_url: str, target_client_id: str, auth_token: str):
+def delete_client_cmd(server_url: str, target_client_id: str, auth_token: str, ssl_context=None):
     """Delete a registered client on the server (admin only)."""
     url = f"{server_url.rstrip('/')}/api/clients/{urllib.parse.quote(target_client_id)}"
     headers = {"Authorization": f"Bearer {auth_token}"}
@@ -1548,7 +1734,7 @@ def delete_client_cmd(server_url: str, target_client_id: str, auth_token: str):
     try:
         print(f"🗑️  Deleting client {target_client_id}...")
         req = urllib.request.Request(url, headers=headers, method="DELETE")
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, context=ssl_context) as response:
             result = json.loads(response.read().decode())
             print("✅ Client deleted successfully!")
             print(f"   Deleted: {result['deleted']}")
@@ -1566,24 +1752,24 @@ def delete_client_cmd(server_url: str, target_client_id: str, auth_token: str):
         return False
 
 
-def _rotation_request(server_url: str, endpoint: str, auth_token: str):
+def _rotation_request(server_url: str, endpoint: str, auth_token: str, ssl_context=None):
     """POST to a rotation endpoint. Returns parsed JSON response."""
     url = f"{server_url.rstrip('/')}{endpoint}"
     headers = {"Authorization": f"Bearer {auth_token}", "Content-Length": "0"}
     req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(req, context=ssl_context) as response:
         return json.loads(response.read().decode())
 
 
-def start_client_rotation(server_url: str, auth_token: str):
+def start_client_rotation(server_url: str, auth_token: str, ssl_context=None):
     """Call start-client-rotation endpoint. Returns new_secret or None."""
-    result = _rotation_request(server_url, "/api/token/start-client-rotation", auth_token)
+    result = _rotation_request(server_url, "/api/token/start-client-rotation", auth_token, ssl_context=ssl_context)
     return result.get("new_secret")
 
 
-def complete_client_rotation(server_url: str, auth_token: str):
+def complete_client_rotation(server_url: str, auth_token: str, ssl_context=None):
     """Call complete-client-rotation endpoint. Returns True on success."""
-    result = _rotation_request(server_url, "/api/token/complete-client-rotation", auth_token)
+    result = _rotation_request(server_url, "/api/token/complete-client-rotation", auth_token, ssl_context=ssl_context)
     return result.get("success", False)
 
 
@@ -1635,7 +1821,7 @@ def rotate_cmd(args):
     Handles the case where the server already has 2 tokens (409 on start) by
     completing the stale rotation with our single secret first.
     """
-    server_url, auth_token = resolve_server(args)
+    server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
     if not auth_token:
         print("Error: Credentials required to rotate.", file=sys.stderr)
         sys.exit(1)
@@ -1657,12 +1843,12 @@ def rotate_cmd(args):
         # Step 1: Start rotation — server generates new token
         print("🔄 Starting token rotation...")
         try:
-            new_secret = start_client_rotation(server_url, auth_token)
+            new_secret = start_client_rotation(server_url, auth_token, ssl_context=ssl_ctx)
         except urllib.error.HTTPError as e:
             if e.code == 409:
                 # Server already has 2 tokens — stale rotation from a previous run.
                 # Complete it with our single secret, then ask user to rotate again.
-                complete_client_rotation(server_url, auth_token)
+                complete_client_rotation(server_url, auth_token, ssl_context=ssl_ctx)
                 print("⚠️  Previous rotation was incomplete. Resolved it, but did not rotate.")
                 print("   Please run 'companion rotate' again.")
                 sys.exit(1)
@@ -1685,7 +1871,7 @@ def rotate_cmd(args):
         # Step 3: Complete rotation — tell server to drop old token
         new_auth_token = f"{client_id}:{new_secret}"
         print("🔄 Completing rotation...")
-        complete_client_rotation(server_url, new_auth_token)
+        complete_client_rotation(server_url, new_auth_token, ssl_context=ssl_ctx)
 
         # Step 4: Update local config to keep only the new secret
         try:
@@ -1719,7 +1905,7 @@ def complete_rotation_cmd(args):
     since it's the newest). The first secret that authenticates wins — completes
     server-side rotation with it and saves only that secret locally.
     """
-    server_url, _ = resolve_server(args)
+    server_url, _, ssl_ctx = resolve_server_and_ssl(args)
     if not server_url:
         print("Error: Server URL required.", file=sys.stderr)
         sys.exit(1)
@@ -1744,7 +1930,7 @@ def complete_rotation_cmd(args):
     for s in reversed(all_secrets):
         token = f"{client_id}:{s}"
         try:
-            complete_client_rotation(server_url, token)
+            complete_client_rotation(server_url, token, ssl_context=ssl_ctx)
             _save_secrets(server_name, [s])
             print("✅ Rotation completed!")
             logger.debug("Surviving secret: %s", s)
@@ -2018,7 +2204,7 @@ def register_cmd(args):
             sys.exit(1)
         args.server = server_name
 
-    server_url, auth_token = resolve_server(args)
+    server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
     if not auth_token:
         print("Error: No admin credentials found for this server.", file=sys.stderr)
         sys.exit(1)
@@ -2037,7 +2223,12 @@ def register_cmd(args):
             new_client_secret = input("New client secret (blank to auto-generate): ").strip() or None
 
     new_client_id, new_client_secret = register_client(
-        server_url, name, auth_token, new_client_id=new_client_id, new_client_secret=new_client_secret
+        server_url,
+        name,
+        auth_token,
+        new_client_id=new_client_id,
+        new_client_secret=new_client_secret,
+        ssl_context=ssl_ctx,
     )
     if new_client_id:
         print("\n   Share the credentials above with the new client.")
@@ -2082,11 +2273,91 @@ def list_state_servers_cmd(args):
             print(f"  {name}  ({n} {client_word}, {admins} {admin_word})")
 
 
+def fingerprint_cmd(args):
+    """Print the SHA-256 of the leaf cert presented by *--server-url* (or the server from config/--server).
+
+    Paranoid by default: requires either --ca-cert (verify the cert during the
+    handshake against that CA) or --insecure (skip verification — pure TOFU).
+    Without one of these, blindly pinning whatever cert appears on the wire
+    would defeat the point of pinning.
+    """
+    global _INSECURE_WARNED
+
+    url = getattr(args, "server_url", None)
+    server_config = None
+    if not url:
+        # Fall back to resolving the named server's URL from config.
+        try:
+            url, _ = resolve_server(args)
+        except SystemExit:
+            url = None
+        server_config = _server_config_for(args)
+    if not url:
+        print("Error: --server-url <https://...> or a configured server is required.", file=sys.stderr)
+        sys.exit(1)
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        print(f"Error: fingerprint requires an https:// URL (got {url!r}).", file=sys.stderr)
+        sys.exit(1)
+    host = parsed.hostname
+    port = parsed.port or 443
+    if not host:
+        print(f"Error: could not parse host from {url!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    insecure = bool(_resolve_security_setting(args, server_config, "insecure", default=False))
+    ca_cert = _resolve_security_setting(args, server_config, "ca-cert", default=None)
+
+    if not insecure and not ca_cert:
+        print(
+            "Error: fingerprint requires either --ca-cert <path> (verify the cert against this CA)\n"
+            "       or --insecure (skip verification — pure TOFU).\n"
+            "       Without one, you would be blindly pinning whatever cert appears on the wire.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if insecure:
+        if not _INSECURE_WARNED:
+            print(
+                "⚠️  --insecure: TLS verification disabled for this process. All certs will be accepted.",
+                file=sys.stderr,
+            )
+            _INSECURE_WARNED = True
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    else:
+        # Strict by default in create_default_context: CERT_REQUIRED + check_hostname=True.
+        ctx = ssl.create_default_context(cafile=ca_cert)
+
+    try:
+        with socket.create_connection((host, port), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                der = ssock.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError) as exc:
+        print(f"Error: failed to connect to {host}:{port}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    fp = hashlib.sha256(der).hexdigest()
+    print(fp)
+
+
 COMMAND_GROUPS = [
     ("Server", ["server", "server-setup", "server-add-user", "list-state-servers"]),
     (
         "Client",
-        ["connect", "upload", "download", "list", "set-preview", "get-pad", "set-pad", "rotate", "complete-rotation"],
+        [
+            "connect",
+            "upload",
+            "download",
+            "list",
+            "set-preview",
+            "get-pad",
+            "set-pad",
+            "rotate",
+            "complete-rotation",
+            "fingerprint",
+        ],
     ),
     ("Admin", ["register", "clients", "delete-client"]),
 ]
@@ -2172,6 +2443,14 @@ def main():
         if needs_auth:
             subparser.add_argument("--client-id", help="Client ID (overrides config)")
             subparser.add_argument("--client-secret", help="Client secret (overrides config)")
+        # TLS security overrides (paranoid by default; see make_pinned_ssl_context).
+        subparser.add_argument("--ca-cert", help="Path to a CA bundle (overrides system store)")
+        subparser.add_argument("--cert-sha256", help="Pinned hex SHA-256 of the server's leaf cert")
+        subparser.add_argument(
+            "--insecure",
+            action="store_true",
+            help="Disable TLS verification (warning printed once per process)",
+        )
 
     # Upload mode
     upload_parser = subparsers.add_parser("upload", help="Upload a file to the server")
@@ -2223,6 +2502,16 @@ def main():
     # Complete rotation mode
     complete_rotation_parser = subparsers.add_parser("complete-rotation", help="Complete an interrupted rotation")
     add_server_args(complete_rotation_parser, needs_auth=True)
+    # Fingerprint mode: print the server's leaf cert SHA-256 (for pinning)
+    fingerprint_parser = subparsers.add_parser(
+        "fingerprint", help="Print SHA-256 of the server's leaf cert (for cert-sha256 pinning)"
+    )
+    fingerprint_parser.add_argument("--server", help="Named server from config (uses its url)")
+    fingerprint_parser.add_argument("--server-url", help="Explicit https:// URL to fingerprint")
+    fingerprint_parser.add_argument("--ca-cert", help="CA bundle to verify the cert against during fingerprint")
+    fingerprint_parser.add_argument(
+        "--insecure", action="store_true", help="Skip verification (pure TOFU; warning printed once)"
+    )
     # Build grouped help and attach as epilog
     parser.epilog = _build_grouped_help(subparsers)
     # Remove the empty positional arguments section from output
@@ -2252,7 +2541,7 @@ def main():
         port = resolve_server_config(args)
         run_server(port)
     elif args.mode == "upload":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required for upload.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
@@ -2262,74 +2551,77 @@ def main():
             args.file_path,
             auth_token,
             set_preview=args.set_preview,
+            ssl_context=ssl_ctx,
         )
         sys.exit(0 if success else 1)
     elif args.mode == "list":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required to list files.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        success = list_files(server_url, auth_token)
+        success = list_files(server_url, auth_token, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "download":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required to download files.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        success = download_file(server_url, args.filename, auth_token, args.output)
+        success = download_file(server_url, args.filename, auth_token, args.output, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "set-preview":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required for set-preview.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        file_id = resolve_file_id(server_url, args.filename, auth_token)
+        file_id = resolve_file_id(server_url, args.filename, auth_token, ssl_context=ssl_ctx)
         if not file_id:
             print(f"Error: File not found on server: {args.filename}", file=sys.stderr)
             sys.exit(1)
-        success = set_preview_func(server_url, file_id, auth_token)
+        success = set_preview_func(server_url, file_id, auth_token, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "get-pad":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required to get pad.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        success = get_pad(server_url, auth_token)
+        success = get_pad(server_url, auth_token, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "set-pad":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required for set-pad.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        success = set_pad(server_url, args.content, auth_token)
+        success = set_pad(server_url, args.content, auth_token, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "register":
         register_cmd(args)
     elif args.mode == "clients":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required to list clients.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        success = list_clients_cmd(server_url, auth_token)
+        success = list_clients_cmd(server_url, auth_token, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "delete-client":
-        server_url, auth_token = resolve_server(args)
+        server_url, auth_token, ssl_ctx = resolve_server_and_ssl(args)
         if not auth_token:
             print("Error: Credentials required to delete a client.", file=sys.stderr)
             print("Run 'companion server-add-user' first, or provide --client-id and --client-secret.", file=sys.stderr)
             sys.exit(1)
-        success = delete_client_cmd(server_url, args.client_id_to_delete, auth_token)
+        success = delete_client_cmd(server_url, args.client_id_to_delete, auth_token, ssl_context=ssl_ctx)
         sys.exit(0 if success else 1)
     elif args.mode == "rotate":
         rotate_cmd(args)
     elif args.mode == "complete-rotation":
         complete_rotation_cmd(args)
+    elif args.mode == "fingerprint":
+        fingerprint_cmd(args)
 
 
 if __name__ == "__main__":
