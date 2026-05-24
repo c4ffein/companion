@@ -394,5 +394,37 @@ class TestConnectInteractive(unittest.TestCase):
         _assert_client_creds(self, server, expected_id="prompted-cid", expected_secret="prompted-csecret")
 
 
+class TestListStateServers(unittest.TestCase):
+    """list-state-servers diagnostic command."""
+
+    def setUp(self):
+        self.tmp_home = tempfile.mkdtemp()
+        self.env = _make_env(self.tmp_home)
+
+    def test_no_state_dir(self):
+        """With nothing on disk, output mentions the missing state dir and exits 0."""
+        result = _run(["list-state-servers"], env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No state dir", result.stdout)
+
+    def test_empty_servers_dir(self):
+        """Existing but empty servers dir reports no servers found."""
+        state_servers = Path(self.tmp_home) / ".local" / "state" / "companion" / "servers"
+        state_servers.mkdir(parents=True)
+        result = _run(["list-state-servers"], env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No servers found", result.stdout)
+
+    def test_lists_servers_after_setup(self):
+        """After server-setup, the default server appears with its client count."""
+        setup = _run(["server-setup", "--url", "http://localhost:8080"], env=self.env)
+        self.assertEqual(setup.returncode, 0, setup.stderr)
+        result = _run(["list-state-servers"], env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("default", result.stdout)
+        self.assertIn("1 client", result.stdout)
+        self.assertIn("1 admin", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
