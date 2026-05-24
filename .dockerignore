@@ -1,0 +1,15 @@
+# Only the built single-file companion.py is needed at runtime.
+src/
+tests/
+js_deps/
+build.py
+Makefile
+.github/
+.git/
+.ruff_cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+e2e_test_browser.py
+playwright.config.*
+node_modules/
