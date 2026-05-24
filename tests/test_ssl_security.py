@@ -34,7 +34,7 @@ class TestBuildSSLContext(unittest.TestCase):
         companion._INSECURE_WARNED = False
 
     def test_http_url_returns_none(self):
-        """Plain http:// needs no TLS context."""
+        """Plain http:// with no TLS knobs needs no TLS context."""
         self.assertIsNone(companion._build_ssl_context("http://localhost:8080", _args(), None))
 
     def test_empty_url_returns_none(self):
@@ -101,6 +101,46 @@ class TestBuildSSLContext(unittest.TestCase):
         self.assertIsNot(ctx.sslsocket_class, ssl.SSLSocket)
 
 
+class TestRefuseTLSSettingsOnNonHTTPS(unittest.TestCase):
+    """_refuse_tls_settings_on_non_https: catches the http+TLS-knobs footgun before urlopen.
+
+    A TLS knob on a non-https URL is silently ignored (and a 30x redirect to https
+    silently falls back to the system CA bundle), so refuse upfront with a clear
+    error rather than letting the user hit "CERTIFICATE_VERIFY_FAILED" downstream.
+    """
+
+    def test_https_url_does_not_refuse(self):
+        """https URLs always pass through — TLS knobs are valid there."""
+        companion._refuse_tls_settings_on_non_https(
+            "https://x", _args(ca_cert="/c", cert_sha256="a" * 64, insecure=True), None
+        )
+
+    def test_clean_http_url_does_not_refuse(self):
+        """Plain http with zero TLS knobs is legit (local dev, no redirects)."""
+        companion._refuse_tls_settings_on_non_https("http://x", _args(), None)
+
+    def test_http_with_ca_cert_refuses(self):
+        with self.assertRaises(companion.CertVerificationConfigError) as cm:
+            companion._refuse_tls_settings_on_non_https("http://x", _args(ca_cert="/path/to/ca"), None)
+        self.assertIn("scheme is 'http'", str(cm.exception))
+        self.assertIn("ca-cert", str(cm.exception))
+
+    def test_http_with_insecure_refuses(self):
+        with self.assertRaises(companion.CertVerificationConfigError) as cm:
+            companion._refuse_tls_settings_on_non_https("http://x", _args(insecure=True), None)
+        self.assertIn("insecure", str(cm.exception))
+
+    def test_http_with_cert_sha256_refuses(self):
+        with self.assertRaises(companion.CertVerificationConfigError) as cm:
+            companion._refuse_tls_settings_on_non_https("http://x", _args(cert_sha256="a" * 64), None)
+        self.assertIn("cert-sha256", str(cm.exception))
+
+    def test_http_with_tls_setting_in_server_config_refuses(self):
+        """TLS settings nested in server_config also trigger refusal on http URLs."""
+        with self.assertRaises(companion.CertVerificationConfigError):
+            companion._refuse_tls_settings_on_non_https("http://x", _args(), {"url": "http://x", "ca-cert": "/ca"})
+
+
 class TestMakePinnedSSLContext(unittest.TestCase):
     """make_pinned_ssl_context: verbatim port from c4ffein/bank — pin is required."""
 
@@ -123,6 +163,83 @@ class TestMakePinnedSSLContext(unittest.TestCase):
         self.assertIs(type(ctx), ssl.SSLContext)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(ctx.check_hostname)
+
+
+class TestCommandFunctionsThreadSSLContext(unittest.TestCase):
+    """Regression guard: every CLI command function must actually pass *its*
+    ssl_context kwarg through to urlopen. If someone removes `context=ssl_context`
+    from a call site, this test catches it before users hit CERT_VERIFY_FAILED."""
+
+    def setUp(self):
+        companion._INSECURE_WARNED = False
+
+    def _capture_urlopen_context(self, callable_fn, ssl_context):
+        """Patch urlopen to capture the context it receives; return it."""
+        captured = {}
+
+        class _FakeResp:
+            status = 200
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return False
+
+            def read(self_inner):
+                return b"[]"
+
+        def fake_urlopen(req, *args, **kwargs):
+            captured["ctx"] = kwargs.get("context")
+            return _FakeResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            callable_fn()
+        return captured.get("ctx", "NOT_CALLED")
+
+    def test_list_files_threads_insecure_context(self):
+        """list_files(..., ssl_context=insecure_ctx) → urlopen sees the same insecure ctx."""
+        insecure_ctx = companion._build_ssl_context("https://example.com", _args(insecure=True), None)
+        self.assertEqual(insecure_ctx.verify_mode, ssl.CERT_NONE)
+        got = self._capture_urlopen_context(
+            lambda: companion.list_files("https://example.com", "id:secret", ssl_context=insecure_ctx),
+            insecure_ctx,
+        )
+        self.assertIs(got, insecure_ctx, "list_files must pass ssl_context to urlopen")
+
+    def test_get_pad_threads_insecure_context(self):
+        insecure_ctx = companion._build_ssl_context("https://example.com", _args(insecure=True), None)
+        got = self._capture_urlopen_context(
+            lambda: companion.get_pad("https://example.com", "id:secret", ssl_context=insecure_ctx),
+            insecure_ctx,
+        )
+        self.assertIs(got, insecure_ctx, "get_pad must pass ssl_context to urlopen")
+
+    def test_list_clients_cmd_threads_insecure_context(self):
+        insecure_ctx = companion._build_ssl_context("https://example.com", _args(insecure=True), None)
+        got = self._capture_urlopen_context(
+            lambda: companion.list_clients_cmd("https://example.com", "id:secret", ssl_context=insecure_ctx),
+            insecure_ctx,
+        )
+        self.assertIs(got, insecure_ctx, "list_clients_cmd must pass ssl_context to urlopen")
+
+    def test_resolve_file_id_threads_insecure_context(self):
+        insecure_ctx = companion._build_ssl_context("https://example.com", _args(insecure=True), None)
+        got = self._capture_urlopen_context(
+            lambda: companion.resolve_file_id("https://example.com", "file.txt", "id:secret", ssl_context=insecure_ctx),
+            insecure_ctx,
+        )
+        self.assertIs(got, insecure_ctx, "resolve_file_id must pass ssl_context to urlopen")
+
+    def test_rotation_request_threads_insecure_context(self):
+        insecure_ctx = companion._build_ssl_context("https://example.com", _args(insecure=True), None)
+        got = self._capture_urlopen_context(
+            lambda: companion._rotation_request(
+                "https://example.com", "/api/token/start-client-rotation", "id:secret", ssl_context=insecure_ctx
+            ),
+            insecure_ctx,
+        )
+        self.assertIs(got, insecure_ctx, "_rotation_request must pass ssl_context to urlopen")
 
 
 class TestFingerprintCmd(unittest.TestCase):

@@ -147,6 +147,8 @@ _INDEX_HTML = """<!DOCTYPE html>
 <head>
     <title>Companion</title>
     <meta charset="utf-8">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='black'/%3E%3Crect x='156' y='40' width='200' height='432' rx='28' fill='white'/%3E%3C/svg%3E">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='black'/%3E%3Crect x='156' y='40' width='200' height='432' rx='28' fill='white'/%3E%3C/svg%3E">
     <!-- maximum-scale=1 suppresses iOS's auto-zoom when an input is focused (text <16px would
          otherwise trigger a zoom). iOS still honors this for auto-zoom even though it ignores it
          for *manual* pinch — pinch is disabled separately via touch-action in the CSS below. -->
@@ -1457,14 +1459,37 @@ def _server_config_for(args) -> Optional[dict]:
     return config.get("servers", {}).get(server_name)
 
 
+def _refuse_tls_settings_on_non_https(url, args, server_config) -> None:
+    """Raise CertVerificationConfigError if *url* isn't https but any TLS knob is set.
+
+    A TLS setting on a non-https URL would be silently ignored, and a 30x redirect
+    to https would fall back to the default (system-CA) verification, defeating the
+    user's stated trust intent. Better to refuse than to pretend it worked.
+    """
+    scheme = urllib.parse.urlparse(url).scheme if url else ""
+    if scheme == "https" or not scheme:
+        return
+    for key in ("ca-cert", "cert-sha256", "insecure"):
+        v = _resolve_security_setting(args, server_config, key, default=None)
+        if v is not None and v is not False:  # value explicitly set
+            raise CertVerificationConfigError(
+                f"Refusing to use {url!r}: scheme is {scheme!r} but TLS setting "
+                f"{key!r} is set (would be silently ignored, including on http→https redirects).\n"
+                "   Either switch the URL to https://, or remove the TLS setting."
+            )
+
+
 def resolve_server_and_ssl(args) -> Tuple[str, Optional[str], Optional[ssl.SSLContext]]:
     """resolve_server + build TLS context for the resolved URL.
 
-    Exits 1 on CertVerificationConfigError (e.g. https with no pin + no --insecure).
+    Exits 1 on CertVerificationConfigError (e.g. https with no pin + no --insecure,
+    or TLS settings on a non-https URL).
     """
     url, token = resolve_server(args)
+    server_config = _server_config_for(args)
     try:
-        ctx = _build_ssl_context(url, args, _server_config_for(args))
+        _refuse_tls_settings_on_non_https(url, args, server_config)
+        ctx = _build_ssl_context(url, args, server_config)
     except CertVerificationConfigError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
