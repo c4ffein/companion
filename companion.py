@@ -1326,7 +1326,6 @@ def _clients_locked(server_name: str):
 # server's leaf certificate SHA-256 to be pinned in config (or via flag).
 # Defense in depth — even if the CA chain validates, a different cert from the
 # same CA is rejected. Bootstrap a new server with `companion fingerprint`.
-# The pinning primitive is ported from c4ffein/bank (make_pinned_ssl_context).
 # ─────────────────────────────────────────────────────────────────────────────
 
 
