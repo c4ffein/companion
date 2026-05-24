@@ -46,14 +46,20 @@ def _make_legacy_client_entry(client_secret, admin=False, name="test"):
 
 @contextlib.contextmanager
 def _fake_config_locked(in_memory_config):
-    """A mock _config_locked that uses an in-memory dict instead of the filesystem.
-
-    On exit, it rebuilds ACTIVE_SERVER_CLIENTS from the in-memory config
-    just like the real _config_locked does.
-    """
+    """A mock _config_locked that uses an in-memory dict instead of the filesystem."""
     yield in_memory_config
+
+
+@contextlib.contextmanager
+def _fake_clients_locked(in_memory_clients):
+    """A mock _clients_locked that uses an in-memory dict instead of the filesystem.
+
+    Mirrors the real _clients_locked: yields the clients dict, then rebuilds
+    ACTIVE_SERVER_CLIENTS on clean exit (matching the cache-refresh contract).
+    """
+    yield in_memory_clients
     if companion._ACTIVE_SERVER_NAME:
-        companion.ACTIVE_SERVER_CLIENTS = dict(companion._get_clients_from_config(in_memory_config))
+        companion.ACTIVE_SERVER_CLIENTS = dict(in_memory_clients)
 
 
 class TestTokenRotation(unittest.TestCase):
@@ -80,15 +86,9 @@ class TestTokenRotation(unittest.TestCase):
         # Store originals for reset
         cls._original_clients = json.loads(json.dumps(companion.ACTIVE_SERVER_CLIENTS))
         companion._ACTIVE_SERVER_NAME = "test-rotation"
-        # Build the in-memory config that mirrors ACTIVE_SERVER_CLIENTS
-        cls._in_memory_config = {
-            "servers": {
-                "test-rotation": {
-                    "url": f"http://localhost:{cls.port}",
-                    "clients": json.loads(json.dumps(companion.ACTIVE_SERVER_CLIENTS)),
-                }
-            }
-        }
+        # In-memory clients dict shared across the test class (substitutes the
+        # state-dir clients.json file via _fake_clients_locked).
+        cls._in_memory_clients = json.loads(json.dumps(companion.ACTIVE_SERVER_CLIENTS))
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)
@@ -122,16 +122,17 @@ class TestTokenRotation(unittest.TestCase):
     def setUp(self):
         with companion.RATE_LIMIT_LOCK:
             companion.RATE_LIMIT_STORE.clear()
-        # Reset clients and in-memory config to initial state
+        # Reset clients and in-memory store to initial state
         companion.ACTIVE_SERVER_CLIENTS.update(json.loads(json.dumps(self._original_clients)))
-        self._in_memory_config["servers"]["test-rotation"]["clients"] = json.loads(json.dumps(self._original_clients))
-        # Patch _config_locked to use in-memory config
-        config_patcher = patch(
-            "companion._config_locked",
-            lambda: _fake_config_locked(self._in_memory_config),
+        self._in_memory_clients.clear()
+        self._in_memory_clients.update(json.loads(json.dumps(self._original_clients)))
+        # Patch _clients_locked to use the in-memory clients dict
+        clients_patcher = patch(
+            "companion._clients_locked",
+            lambda server_name: _fake_clients_locked(self._in_memory_clients),
         )
-        config_patcher.start()
-        self.addCleanup(config_patcher.stop)
+        clients_patcher.start()
+        self.addCleanup(clients_patcher.stop)
         # Silence request logging
         log_patcher = patch.object(companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None)
         log_patcher.start()
@@ -480,23 +481,14 @@ class _RotateCmdTestBase(unittest.TestCase):
         """Reset the server client to a single-token state with the given secret."""
         companion.ACTIVE_SERVER_CLIENTS[self.client_id] = _make_client_entry(secret)
 
-    def _server_config(self):
-        """Build an in-memory config for server-side _config_locked."""
-        return {
-            "servers": {
-                self.server_name: {
-                    "url": self.base_url,
-                    "clients": {
-                        self.client_id: json.loads(json.dumps(companion.ACTIVE_SERVER_CLIENTS[self.client_id]))
-                    },
-                }
-            },
-        }
+    def _server_clients(self):
+        """Build an in-memory clients dict for server-side _clients_locked."""
+        return {self.client_id: json.loads(json.dumps(companion.ACTIVE_SERVER_CLIENTS[self.client_id]))}
 
     def _start_server_rotation(self, auth_token):
         """Start rotation on the server via HTTP, returning the new secret."""
-        config = self._server_config()
-        with patch("companion._config_locked", lambda: _fake_config_locked(config)):
+        server_clients = self._server_clients()
+        with patch("companion._clients_locked", lambda server_name: _fake_clients_locked(server_clients)):
             url = f"{self.base_url}/api/token/start-client-rotation"
             req = urllib.request.Request(
                 url,
@@ -516,25 +508,25 @@ class _RotateCmdTestBase(unittest.TestCase):
                     "url": self.base_url,
                     "client-id": self.client_id,
                     "client-secrets": list(local_secrets),
-                    "clients": json.loads(json.dumps(companion.ACTIVE_SERVER_CLIENTS)),
                 }
             },
         }
 
     def _run_cmd(self, cmd_func, local_secrets):
-        """Run a rotate/complete command with mocked config.
+        """Run a rotate/complete command with mocked config + clients DB.
 
         Returns (exit_code, final_client_secrets).
         Captured stdout+stderr is stored in self._captured_output.
         """
         config = self._build_config(local_secrets)
+        server_clients = self._server_clients()
         captured = io.StringIO()
 
         with patch("companion.load_config", return_value=config), patch(
             "companion._config_locked", lambda: _fake_config_locked(config)
-        ), patch.object(companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None), patch(
-            "sys.stdout", captured
-        ), patch("sys.stderr", captured):
+        ), patch("companion._clients_locked", lambda server_name: _fake_clients_locked(server_clients)), patch.object(
+            companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None
+        ), patch("sys.stdout", captured), patch("sys.stderr", captured):
             try:
                 mock_args = type("Args", (), {"server": self.server_name, "url": None, "auth_token": None})()
                 cmd_func(mock_args)

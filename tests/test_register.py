@@ -75,6 +75,20 @@ def _make_client_entry(client_secret, admin=True, name="test"):
     }
 
 
+def _seed_clients(server_name, clients):
+    """Write the client database for *server_name* into the (patched) state dir."""
+    path = companion._clients_path(server_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(clients, f)
+
+
+def _pop_client(server_name, client_id):
+    """Remove a client from the state-dir database (test cleanup)."""
+    with companion._clients_locked(server_name) as clients:
+        clients.pop(client_id, None)
+
+
 class TestRegisterNonRunningServer(unittest.TestCase):
     """Standalone test — no server needed."""
 
@@ -107,28 +121,25 @@ class TestRegisterAPI(unittest.TestCase):
         companion.PAD_STATE = {"content": "", "timestamp": 0}
         companion.RATE_LIMIT_STORE.clear()
 
-        # Set up config file so _config_locked can persist
+        # Point config + state dir at a temp location.
         cls._tmp_config_dir = tempfile.mkdtemp()
         cls._orig_config_path = companion.CONFIG_PATH
         cls._orig_lock_path = companion._CONFIG_LOCK_PATH
+        cls._orig_state_dir = companion.STATE_DIR
         companion.CONFIG_PATH = Path(cls._tmp_config_dir) / "config.json"
         companion._CONFIG_LOCK_PATH = companion.CONFIG_PATH.with_suffix(".lock")
+        companion.STATE_DIR = Path(cls._tmp_config_dir) / "state"
 
         admin_entry = _make_client_entry(cls.admin_secret, admin=True, name="admin")
         nonadmin_entry = _make_client_entry(cls.nonadmin_secret, admin=False, name="nonadmin")
-        config = {
-            "servers": {
-                "testserver": {
-                    "url": cls.base_url,
-                    "clients": {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry},
-                }
-            }
-        }
+        config = {"servers": {"testserver": {"url": cls.base_url}}}
         with open(companion.CONFIG_PATH, "w") as f:
             json.dump(config, f)
 
         companion._ACTIVE_SERVER_NAME = "testserver"
-        companion.ACTIVE_SERVER_CLIENTS = {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry}
+        # Client DB lives in the state dir now; seed it and load the in-memory cache.
+        _seed_clients("testserver", {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry})
+        companion.ACTIVE_SERVER_CLIENTS = companion.load_clients("testserver")
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)
@@ -148,6 +159,7 @@ class TestRegisterAPI(unittest.TestCase):
             cls.httpd.server_close()
         companion.CONFIG_PATH = cls._orig_config_path
         companion._CONFIG_LOCK_PATH = cls._orig_lock_path
+        companion.STATE_DIR = cls._orig_state_dir
         companion._ACTIVE_SERVER_NAME = None
 
     def setUp(self):
@@ -204,15 +216,13 @@ class TestRegisterAPI(unittest.TestCase):
             self.assertEqual(r.status, 200)
 
         # Cleanup
-        with companion._config_locked() as cfg:
-            companion._get_clients_from_config(cfg).pop(cid, None)
+        _pop_client("testserver", cid)
 
     def test_register_with_provided_id(self):
         """Admin can register a client with a specific chosen client_id."""
         chosen_id = "my-chosen-id"
         # Ensure it doesn't already exist
-        with companion._config_locked() as cfg:
-            companion._get_clients_from_config(cfg).pop(chosen_id, None)
+        _pop_client("testserver", chosen_id)
 
         cid, csecret, resp = self._register(self.admin_token, client_id=chosen_id, name="chosen")
         result = json.loads(resp.read().decode())
@@ -222,15 +232,13 @@ class TestRegisterAPI(unittest.TestCase):
         self.assertIn(chosen_id, companion.ACTIVE_SERVER_CLIENTS)
 
         # Cleanup
-        with companion._config_locked() as cfg:
-            companion._get_clients_from_config(cfg).pop(chosen_id, None)
+        _pop_client("testserver", chosen_id)
 
     def test_register_duplicate_id(self):
         """Registering the same client_id twice returns 409 CONFLICT."""
         dup_id = "duplicate-test-id"
         # Ensure clean state
-        with companion._config_locked() as cfg:
-            companion._get_clients_from_config(cfg).pop(dup_id, None)
+        _pop_client("testserver", dup_id)
 
         # First registration succeeds
         _cid, _csecret, resp = self._register(self.admin_token, client_id=dup_id, name="first")
@@ -242,8 +250,7 @@ class TestRegisterAPI(unittest.TestCase):
         self.assertEqual(cm.exception.code, 409)
 
         # Cleanup
-        with companion._config_locked() as cfg:
-            companion._get_clients_from_config(cfg).pop(dup_id, None)
+        _pop_client("testserver", dup_id)
 
 
 class TestRegisterCLI(unittest.TestCase):
@@ -264,28 +271,24 @@ class TestRegisterCLI(unittest.TestCase):
         companion.PAD_STATE = {"content": "", "timestamp": 0}
         companion.RATE_LIMIT_STORE.clear()
 
-        # Set up config file so _config_locked can persist
+        # Point the in-process server's config + state dir at a temp location.
         cls._tmp_config_dir = tempfile.mkdtemp()
         cls._orig_config_path = companion.CONFIG_PATH
         cls._orig_lock_path = companion._CONFIG_LOCK_PATH
+        cls._orig_state_dir = companion.STATE_DIR
         companion.CONFIG_PATH = Path(cls._tmp_config_dir) / "config.json"
         companion._CONFIG_LOCK_PATH = companion.CONFIG_PATH.with_suffix(".lock")
+        companion.STATE_DIR = Path(cls._tmp_config_dir) / "state"
 
         admin_entry = _make_client_entry(cls.admin_secret, admin=True, name="cli-admin")
         nonadmin_entry = _make_client_entry(cls.nonadmin_secret, admin=False, name="cli-nonadmin")
-        config = {
-            "servers": {
-                "testserver": {
-                    "url": cls.base_url,
-                    "clients": {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry},
-                }
-            }
-        }
+        config = {"servers": {"testserver": {"url": cls.base_url}}}
         with open(companion.CONFIG_PATH, "w") as f:
             json.dump(config, f)
 
         companion._ACTIVE_SERVER_NAME = "testserver"
-        companion.ACTIVE_SERVER_CLIENTS = {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry}
+        _seed_clients("testserver", {cls.admin_id: admin_entry, cls.nonadmin_id: nonadmin_entry})
+        companion.ACTIVE_SERVER_CLIENTS = companion.load_clients("testserver")
 
         def run_server():
             server_address = ("127.0.0.1", cls.port)
@@ -305,6 +308,7 @@ class TestRegisterCLI(unittest.TestCase):
             cls.httpd.server_close()
         companion.CONFIG_PATH = cls._orig_config_path
         companion._CONFIG_LOCK_PATH = cls._orig_lock_path
+        companion.STATE_DIR = cls._orig_state_dir
         companion._ACTIVE_SERVER_NAME = None
 
     def setUp(self):
@@ -349,8 +353,7 @@ class TestRegisterCLI(unittest.TestCase):
             self.assertEqual(r.status, 200)
 
     def _cleanup_client(self, client_id):
-        with companion._config_locked() as cfg:
-            companion._get_clients_from_config(cfg).pop(client_id, None)
+        _pop_client("testserver", client_id)
 
     # --- Non-interactive credential tests ---
 

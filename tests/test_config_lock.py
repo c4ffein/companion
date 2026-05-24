@@ -75,9 +75,11 @@ def _import_companion():
 
 
 def _patch_paths(mod, tmp_dir):
-    """Point CONFIG_PATH and _CONFIG_LOCK_PATH at tmp_dir."""
+    """Point CONFIG_PATH, the config lock, and STATE_DIR at tmp_dir."""
     mod.CONFIG_PATH = Path(tmp_dir) / ".config" / "companion" / "config.json"
-    mod._CONFIG_LOCK_PATH = mod.CONFIG_PATH.with_suffix(".lock")
+    # Lock path is derived as "<name>.lock" by _json_file_locked; mirror that here.
+    mod._CONFIG_LOCK_PATH = mod.CONFIG_PATH.parent / (mod.CONFIG_PATH.name + ".lock")
+    mod.STATE_DIR = Path(tmp_dir) / "state"
 
 
 # ---------------------------------------------------------------------------
@@ -220,42 +222,34 @@ class TestConfigLockedContextManager(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestClientMutationMissingServer(unittest.TestCase):
-    """_get_clients_from_config with server not in config."""
+class TestClientsLockedRequiresServer(unittest.TestCase):
+    """_clients_locked requires a server name; with one it writes to the state dir."""
 
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp()
         self.mod = _import_companion()
         _patch_paths(self.mod, self.tmp_dir)
 
-    def test_get_clients_fails_if_server_missing(self):
-        """_get_clients_from_config raises ConfigReadError when server missing."""
-        config_path = self.mod.CONFIG_PATH
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        initial = {"servers": {"other": {"url": "http://localhost"}}}
-        with open(config_path, "w") as f:
-            json.dump(initial, f)
-        self.mod._ACTIVE_SERVER_NAME = "nonexistent"
+    def test_clients_locked_requires_server_name(self):
+        """_clients_locked('') raises ConfigReadError and writes nothing."""
         with self.assertRaises(self.mod.ConfigReadError):
-            with self.mod._config_locked() as config:
-                self.mod._get_clients_from_config(config)
-        # Config should be unchanged
-        with open(config_path) as f:
+            with self.mod._clients_locked(""):
+                pass
+        # Nothing should have been written under the state dir.
+        self.assertEqual(list(self.mod.STATE_DIR.rglob("*.json")), [])
+
+    def test_clients_locked_writes_to_state_dir(self):
+        """_clients_locked(name) persists the clients dict at servers/<name>/clients.json."""
+        with self.mod._clients_locked("myserver") as clients:
+            clients["abc"] = {"admin": True}
+        path = self.mod._clients_path("myserver")
+        self.assertTrue(path.exists())
+        with open(path) as f:
             result = json.load(f)
-        config_dir = str(config_path.parent)
-        dangling = glob.glob(os.path.join(config_dir, "*.tmp"))
-        self.assertEqual(dangling, [], f"Dangling .tmp files found: {dangling}")
-        lock_path = str(self.mod._CONFIG_LOCK_PATH)
-        if os.path.exists(lock_path):
-            fd = os.open(lock_path, os.O_RDWR)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except BlockingIOError:
-                self.fail("Lock file is still held after _get_clients_from_config()")
-            finally:
-                os.close(fd)
-        self.assertNotIn("nonexistent", result["servers"])
+        self.assertEqual(result, {"abc": {"admin": True}})
+        # Lock released, no dangling temp files.
+        state_dir = str(path.parent)
+        self.assertEqual(glob.glob(os.path.join(state_dir, "*.tmp")), [])
 
 
 class TestAddUserFailsIfServerMissing(unittest.TestCase):

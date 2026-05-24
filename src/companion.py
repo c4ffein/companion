@@ -5,6 +5,7 @@ Usage:
     Server:        python companion.py server [--port PORT] [--server NAME]
     Server setup:  python companion.py server-setup [--server NAME] [--url URL]
     Add user:      python companion.py server-add-user [--name NAME] [--admin]
+    State servers: python companion.py list-state-servers
     Upload:        python companion.py upload <file_path> [--set-preview]
     Download:      python companion.py download <filename> [-o DIR]
     List files:    python companion.py list
@@ -18,9 +19,42 @@ Usage:
     Clients:       python companion.py clients
     Delete client: python companion.py delete-client <client_id>
 
-Config file (~/.config/companion/config.json):
+Config file (~/.config/companion/config.json) — declarative, read-only at runtime:
+    Holds default-server and per-server connection info (url, client-id, client-secrets).
     All commands use default-server from config if available.
-    Override with --server <name> or --server-url <url>
+    Override with --server <name> or --server-url <url>.
+    Env (COMPANION_CONFIG, COMPANION_STATE_DIR, COMPANION_PORT, COMPANION_DEFAULT_SERVER,
+    COMPANION_BOOTSTRAP_ADMIN, ...) overrides config per-key.
+
+State dir (~/.local/state/companion, or $XDG_STATE_HOME, or COMPANION_STATE_DIR) — mutable:
+    Per-server client database at servers/<name>/clients.json (registered clients,
+    token hashes, rotation state). Server-owned; never written to the config file.
+
+Example config.json (annotated; '#' marks role, strip for valid JSON):
+    {
+      "default-server": "main",                 # both — picks the active server
+      "state-dir": "/var/lib/companion",        # server — overrides default state location
+      "servers": {
+        "main": {
+          "url": "http://localhost:8080",       # both — server reads :port, client dials it
+          "client-id": "admin-id",              # client — CLI's outgoing identity
+          "client-secrets": ["admin-secret"]    # client — list (newest last) for rotation
+        }
+      }
+    }
+    Minimal *server-only* config: just default-server + servers.<name>.url
+    (the admin client lives in the state dir, not here).
+    Minimal *client-only* config: servers.<name>.{url, client-id, client-secrets}.
+
+Example environment (works alongside config.json, or fully replaces it):
+    COMPANION_CONFIG=/etc/companion/config.json     # path to config.json
+    COMPANION_STATE_DIR=/data                       # mutable state location
+    COMPANION_PORT=8080                             # listen port (server mode)
+    COMPANION_DEFAULT_SERVER=main                   # named server to run as
+    COMPANION_BOOTSTRAP_ADMIN=admin-id:admin-secret # seed on first boot only
+    COMPANION_CORS_ORIGIN=*                         # CORS Access-Control-Allow-Origin
+    COMPANION_RATE_LIMIT_MAX=30                     # requests / 60s window / client
+    COMPANION_MAX_REQUEST_BODY=4294967296           # bytes; default = per-client limit
 """
 
 import argparse
@@ -105,8 +139,8 @@ FILES: Dict[str, FileEntry] = {}
 WORKSPACE_LOCK = Lock()
 
 # Per-client token auth: {client_id: {tokens: [{salt, secret_hash}, ...], admin, name, registered}}
-# In-memory cache of the config file's clients section.
-# Writes always go through _config_locked(), which auto-rebuilds ACTIVE_SERVER_CLIENTS.
+# In-memory cache of the active server's client database (state dir, not config).
+# Writes always go through _clients_locked(), which auto-rebuilds ACTIVE_SERVER_CLIENTS.
 # Reads are safe without a lock (dict reference swap is atomic under CPython's GIL).
 ACTIVE_SERVER_CLIENTS: Dict[str, dict] = {}
 _ROTATION_BLOCKED = (HTTPStatus.CONFLICT, {"error": "Token rotation in progress — call complete-client-rotation first"})
@@ -144,16 +178,29 @@ RATE_LIMIT_MAX_CLIENTS_BEFORE_CLIENT_EVICTION_CLEANUP = int(
     os.environ.get("COMPANION_RATE_LIMIT_MAX_CLIENTS_BEFORE_CLIENT_EVICTION_CLEANUP", "1000")
 )
 
-# Config file path
-CONFIG_PATH = Path.home() / ".config" / "companion" / "config.json"
-_CONFIG_LOCK_PATH = CONFIG_PATH.with_suffix(".lock")
+# Config file path.
+# Config is declarative and read-only at runtime: the server never writes here.
+# Override with COMPANION_CONFIG (lets a container bind-mount it read-only).
+CONFIG_PATH = Path(
+    os.environ.get("COMPANION_CONFIG", str(Path.home() / ".config" / "companion" / "config.json"))
+).expanduser()
+_CONFIG_LOCK_PATH = CONFIG_PATH.parent / (CONFIG_PATH.name + ".lock")
+
+# State directory: server-owned, mutable data (the per-server client database,
+# token rotation, etc.).  Kept separate from config so config can be read-only
+# and a redeploy never clobbers registered clients.  Resolution order:
+#   1. module global STATE_DIR (tests / explicit override)
+#   2. env COMPANION_STATE_DIR
+#   3. config "state-dir" key
+#   4. $XDG_STATE_HOME/companion, else ~/.local/state/companion
+STATE_DIR: Optional[Path] = None
 
 # Setup logger
 logger = logging.getLogger("companion")
 
 
 def load_config() -> Optional[dict]:
-    """Load config from ~/.config/companion/config.json if it exists."""
+    """Load config from CONFIG_PATH if it exists."""
     if CONFIG_PATH.exists():
         try:
             with open(CONFIG_PATH) as f:
@@ -161,6 +208,38 @@ def load_config() -> Optional[dict]:
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load config from %s: %s", CONFIG_PATH, e)
     return None
+
+
+def get_state_dir() -> Path:
+    """Resolve the state directory (see STATE_DIR docstring for precedence)."""
+    if STATE_DIR is not None:
+        return STATE_DIR
+    env = os.environ.get("COMPANION_STATE_DIR")
+    if env:
+        return Path(env).expanduser()
+    cfg = load_config()
+    if cfg and cfg.get("state-dir"):
+        return Path(cfg["state-dir"]).expanduser()
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return base / "companion"
+
+
+def _clients_path(server_name: str) -> Path:
+    """Path to the client database for *server_name* (lives in the state dir)."""
+    return get_state_dir() / "servers" / server_name / "clients.json"
+
+
+def load_clients(server_name: str) -> dict:
+    """Load the client database for *server_name*, or {} if none exists yet."""
+    path = _clients_path(server_name)
+    if path.exists():
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load clients from %s: %s", path, e)
+    return {}
 
 
 class ConfigError(Exception):
@@ -176,44 +255,80 @@ class ConfigWriteError(ConfigError):
 
 
 @contextlib.contextmanager
-def _config_locked():
-    """Acquire file lock, yield fresh config dict. On clean exit, atomic-write back."""
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(str(_CONFIG_LOCK_PATH), os.O_CREAT | os.O_RDWR)
+def _json_file_locked(path: Path):
+    """Acquire an exclusive lock on <path>.lock, yield the current JSON dict
+    (or {} if the file is absent), and atomic-write it back on clean exit.
+
+    If the with-block raises, nothing is written — the on-disk file is left
+    untouched. The lock + tempfile + os.replace dance makes concurrent writers
+    safe and guarantees readers never see a half-written file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.parent / (path.name + ".lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
     try:
         _lock_file(lock_fd)
         # Clean up stale temp files from previous failed writes
-        for stale in CONFIG_PATH.parent.glob(CONFIG_PATH.stem + ".*.tmp"):
+        for stale in path.parent.glob(path.stem + ".*.tmp"):
             try:
                 stale.unlink()
                 logger.debug("Cleaned up stale temp file: %s", stale)
             except OSError:
                 logger.warning("Failed to clean up stale temp file: %s", stale)
-        config = load_config() or {}
-        yield config
+        data = {}
+        if path.exists():
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load %s: %s", path, e)
+        yield data
         # Only reached if the with-block didn't raise
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_PATH.parent), prefix=CONFIG_PATH.stem + ".", suffix=".tmp")
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=path.stem + ".", suffix=".tmp")
             with os.fdopen(fd, "w") as f:
-                json.dump(config, f, indent=2)
-            os.replace(tmp_path, str(CONFIG_PATH))
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, str(path))
         except Exception as exc:
-            raise ConfigWriteError(f"Failed to save config to {CONFIG_PATH}: {exc}") from exc
-        # Rebuild the in-memory client cache after a successful write.
-        # The reference swap is atomic under CPython's GIL, so readers never
-        # see a partially-built dict.  Only attempt when running as a server
-        # (_ACTIVE_SERVER_NAME is set); CLI commands don't need the cache.
-        if _ACTIVE_SERVER_NAME:
-            global ACTIVE_SERVER_CLIENTS
-            ACTIVE_SERVER_CLIENTS = dict(_get_clients_from_config(config))
+            raise ConfigWriteError(f"Failed to save {path}: {exc}") from exc
     finally:
         try:
             os.close(lock_fd)
         except OSError:
             logger.error(
-                "Failed to close lock fd for %s — config writes may deadlock until restart",
-                _CONFIG_LOCK_PATH,
+                "Failed to close lock fd for %s — writes may deadlock until restart",
+                lock_path,
             )
+
+
+@contextlib.contextmanager
+def _config_locked():
+    """Lock and atomic-write the config file. Yields the config dict.
+
+    Used by setup/connect CLI commands that author config. The running server
+    never calls this — it only writes state (see _clients_locked).
+    """
+    with _json_file_locked(CONFIG_PATH) as config:
+        yield config
+
+
+@contextlib.contextmanager
+def _clients_locked(server_name: str):
+    """Lock and atomic-write the client database for *server_name*.
+
+    Yields the clients dict (mutate it in place). On clean exit, rebuilds the
+    in-memory ACTIVE_SERVER_CLIENTS cache when this is the active server. The
+    reference swap is atomic under CPython's GIL, so readers never see a
+    partially-built dict.
+    """
+    global ACTIVE_SERVER_CLIENTS
+    if not server_name:
+        raise ConfigReadError("No active server name — cannot persist client changes")
+    with _json_file_locked(_clients_path(server_name)) as clients:
+        yield clients
+    # Reached only on clean exit (write succeeded). Refresh the cache.
+    if _ACTIVE_SERVER_NAME == server_name:
+        ACTIVE_SERVER_CLIENTS = dict(clients)
 
 
 def resolve_server(args) -> Tuple[str, Optional[str]]:
@@ -311,91 +426,99 @@ def _print_config_help():
         print(f"     {line}", file=sys.stderr)
 
 
-def _get_clients_from_config(config: dict) -> dict:
-    """Return a mutable reference to the clients dict for the active server.
+def _maybe_bootstrap_admin(server_name: str) -> None:
+    """Seed an admin from COMPANION_BOOTSTRAP_ADMIN=<client_id>:<client_secret>.
 
-    Use this inside _config_locked() when you need to add/remove clients.
-    Raises ConfigReadError if the active server is missing, because you cannot
-    mutate a dict that doesn't exist.
-
+    Only acts when the env var is set and the client database has no admin yet,
+    so a fresh container can come up with a way in without an interactive
+    server-setup. Never overrides an existing admin.
     """
-    if not _ACTIVE_SERVER_NAME:
-        raise ConfigReadError("No active server name — cannot persist client changes")
-    servers = config.get("servers", {})
-    if _ACTIVE_SERVER_NAME not in servers:
-        raise ConfigReadError(f"Server '{_ACTIVE_SERVER_NAME}' not found in config")
-    return servers[_ACTIVE_SERVER_NAME].setdefault("clients", {})
+    spec = os.environ.get("COMPANION_BOOTSTRAP_ADMIN")
+    if not spec:
+        return
+    if ":" not in spec:
+        logger.warning("COMPANION_BOOTSTRAP_ADMIN must be '<client_id>:<client_secret>' — ignoring")
+        return
+    client_id, client_secret = spec.split(":", 1)
+    if not client_id or not client_secret:
+        logger.warning("COMPANION_BOOTSTRAP_ADMIN missing id or secret — ignoring")
+        return
+    if any(c.get("admin") for c in load_clients(server_name).values()):
+        return  # already have an admin; never override
+    salt = secrets.token_hex(16)
+    secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
+    try:
+        with _clients_locked(server_name) as clients:
+            if client_id in clients:
+                return
+            clients[client_id] = {
+                "tokens": [{"salt": salt, "secret_hash": secret_hash}],
+                "admin": True,
+                "name": "bootstrap",
+                "registered": datetime.now().isoformat(),
+            }
+    except ConfigError as exc:
+        logger.error("Failed to seed bootstrap admin: %s", exc)
+        return
+    logger.info("Seeded bootstrap admin '%s' for server '%s'", client_id, server_name)
 
 
 def resolve_server_config(args) -> int:
-    """
-    Resolve server port from args and config for server mode.
-    Loads registered clients into ACTIVE_SERVER_CLIENTS global.
-    Returns port or exits with helpful error message.
+    """Resolve the listen port for server mode and load the client database.
 
-    Priority order:
-    1. CLI args (--port) override config
-    2. --server (named server from config)
-    3. default-server from config
-    4. Default port 8080
+    Sets _ACTIVE_SERVER_NAME and ACTIVE_SERVER_CLIENTS. Config is optional:
+    with no config file the server runs under the "default" server name and
+    reads its clients from the state dir (seedable via COMPANION_BOOTSTRAP_ADMIN).
+
+    Port precedence:        --port > port in server's config URL > COMPANION_PORT > 8080
+    Server-name precedence: --server > COMPANION_DEFAULT_SERVER > config default-server > "default"
     """
-    global _ACTIVE_SERVER_NAME
+    global _ACTIVE_SERVER_NAME, ACTIVE_SERVER_CLIENTS
     config = load_config()
-
-    # Start with CLI values (may be None)
     port = getattr(args, "port", None)
+    servers = config.get("servers", {}) if config else {}
 
-    # Try to get config values
+    server_name = getattr(args, "server", None) or os.environ.get("COMPANION_DEFAULT_SERVER")
     server_config = None
-    server_name = getattr(args, "server", None)
-
     if server_name:
-        # Explicit --server flag
-        if not config:
-            print(f"Error: --server '{server_name}' specified but no config file found.", file=sys.stderr)
-            sys.exit(1)
-        servers = config.get("servers", {})
-        if server_name not in servers:
+        # Only enforce membership when a config with a servers map exists.
+        if servers and server_name not in servers:
             available = ", ".join(servers.keys()) if servers else "(none)"
             print(f"Error: Server '{server_name}' not found in config.", file=sys.stderr)
             print(f"Available servers: {available}", file=sys.stderr)
             sys.exit(1)
-        server_config = servers[server_name]
-        _ACTIVE_SERVER_NAME = server_name
-    elif config:
-        # Try default-server
-        default_name = config.get("default-server")
-        if default_name:
-            servers = config.get("servers", {})
-            if default_name in servers:
-                server_config = servers[default_name]
-                _ACTIVE_SERVER_NAME = default_name
+        server_config = servers.get(server_name)
+    elif config and config.get("default-server"):
+        server_name = config["default-server"]
+        server_config = servers.get(server_name)
 
-    # If no server name resolved, set a default for config persistence
-    if not _ACTIVE_SERVER_NAME:
-        _ACTIVE_SERVER_NAME = "default"
+    if not server_name:
+        server_name = "default"
+    _ACTIVE_SERVER_NAME = server_name
 
-    # Apply config values where CLI didn't override
-    if server_config:
-        if port is None:
-            # Parse port from URL
-            url = server_config.get("url", "")
-            parsed = urllib.parse.urlparse(url)
-            if parsed.port:
-                port = parsed.port
-        # Load registered clients
-        global ACTIVE_SERVER_CLIENTS
-        ACTIVE_SERVER_CLIENTS = dict(server_config.get("clients", {}))
-
-    # Fail if no clients configured
-    if not ACTIVE_SERVER_CLIENTS:
-        print("Error: No clients configured.", file=sys.stderr)
-        print("Run 'companion server-setup' to configure the server first.", file=sys.stderr)
-        sys.exit(1)
-
-    # Apply defaults
+    # Port resolution
+    if port is None and server_config:
+        parsed = urllib.parse.urlparse(server_config.get("url", ""))
+        if parsed.port:
+            port = parsed.port
+    if port is None and os.environ.get("COMPANION_PORT"):
+        try:
+            port = int(os.environ["COMPANION_PORT"])
+        except ValueError:
+            print(f"Error: invalid COMPANION_PORT: {os.environ['COMPANION_PORT']!r}", file=sys.stderr)
+            sys.exit(1)
     if port is None:
         port = 8080
+
+    # Seed a bootstrap admin if requested, then load the client database.
+    _maybe_bootstrap_admin(server_name)
+    ACTIVE_SERVER_CLIENTS = load_clients(server_name)
+
+    if not ACTIVE_SERVER_CLIENTS:
+        print("Error: No clients configured.", file=sys.stderr)
+        print("Run 'companion server-setup' to configure the server first,", file=sys.stderr)
+        print("or set COMPANION_BOOTSTRAP_ADMIN=<client_id>:<client_secret>.", file=sys.stderr)
+        sys.exit(1)
 
     return port
 
@@ -850,8 +973,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
             try:
-                with _config_locked() as config:
-                    clients = _get_clients_from_config(config)
+                with _clients_locked(_ACTIVE_SERVER_NAME) as clients:
                     if client_id in clients:
                         return HTTPStatus.CONFLICT, {"error": "client_id already exists"}
                     clients[client_id] = {
@@ -883,8 +1005,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         new_token_entry = {"salt": salt, "secret_hash": secret_hash}
 
         try:
-            with _config_locked() as config:
-                clients = _get_clients_from_config(config)
+            with _clients_locked(_ACTIVE_SERVER_NAME) as clients:
                 if client_id not in clients:
                     return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
                 entry = clients[client_id]
@@ -913,8 +1034,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         client_secret = client["_client_secret"]
 
         try:
-            with _config_locked() as config:
-                clients = _get_clients_from_config(config)
+            with _clients_locked(_ACTIVE_SERVER_NAME) as clients:
                 if client_id not in clients:
                     return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
                 entry = clients[client_id]
@@ -955,8 +1075,7 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
             return HTTPStatus.BAD_REQUEST, {"error": "Cannot delete yourself"}
 
         try:
-            with _config_locked() as config:
-                clients = _get_clients_from_config(config)
+            with _clients_locked(_ACTIVE_SERVER_NAME) as clients:
                 if target_client_id not in clients:
                     return HTTPStatus.NOT_FOUND, {"error": "Client not found"}
                 del clients[target_client_id]
@@ -1720,21 +1839,23 @@ def server_setup_cmd(args):
     secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
     try:
+        # Config (declarative): server URL + the CLI's own connect credentials.
         with _config_locked() as cfg:
             srvs = cfg.setdefault("servers", {})
             entry = srvs.setdefault(server_name, {})
             entry["url"] = url
-            clients = entry.setdefault("clients", {})
+            if "default-server" not in cfg:
+                cfg["default-server"] = server_name
+            entry["client-id"] = client_id
+            entry["client-secrets"] = [client_secret]
+        # State (server-owned): the admin client lands in the client database.
+        with _clients_locked(server_name) as clients:
             clients[client_id] = {
                 "tokens": [{"salt": salt, "secret_hash": secret_hash}],
                 "admin": True,
                 "name": client_name,
                 "registered": datetime.now().isoformat(),
             }
-            if "default-server" not in cfg:
-                cfg["default-server"] = server_name
-            entry["client-id"] = client_id
-            entry["client-secrets"] = [client_secret]
     except ConfigWriteError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -1783,24 +1904,24 @@ def server_add_user_cmd(args):
     salt = secrets.token_hex(16)
     secret_hash = hashlib.sha256((salt + client_secret).encode()).hexdigest()
 
+    config = load_config()
+    if not config:
+        print("Error: No config file found.", file=sys.stderr)
+        print("Run 'companion server-setup' first.", file=sys.stderr)
+        sys.exit(1)
+    if not server_name:
+        server_name = config.get("default-server")
+    if not server_name:
+        print("Error: No server specified and no default-server in config.", file=sys.stderr)
+        sys.exit(1)
+    servers = config.get("servers", {})
+    if server_name not in servers:
+        available = ", ".join(servers.keys()) if servers else "(none)"
+        print(f"Error: Server '{server_name}' not found. Available: {available}", file=sys.stderr)
+        sys.exit(1)
+
     try:
-        with _config_locked() as cfg:
-            if not cfg:
-                print("Error: No config file found.", file=sys.stderr)
-                print("Run 'companion server-setup' first.", file=sys.stderr)
-                sys.exit(1)
-            if not server_name:
-                server_name = cfg.get("default-server")
-            if not server_name:
-                print("Error: No server specified and no default-server in config.", file=sys.stderr)
-                sys.exit(1)
-            servers = cfg.get("servers", {})
-            if server_name not in servers:
-                available = ", ".join(servers.keys()) if servers else "(none)"
-                print(f"Error: Server '{server_name}' not found. Available: {available}", file=sys.stderr)
-                sys.exit(1)
-            entry = servers[server_name]
-            clients = entry.setdefault("clients", {})
+        with _clients_locked(server_name) as clients:
             if client_id in clients:
                 print(f"Error: Client '{client_id}' already exists on server '{server_name}'.", file=sys.stderr)
                 sys.exit(1)
@@ -1923,8 +2044,46 @@ def register_cmd(args):
     sys.exit(0 if new_client_id else 1)
 
 
+def list_state_servers_cmd(args):
+    """List server names that have a clients database in the state dir.
+
+    Useful when the state dir is decoupled from config (e.g. you migrated
+    state, or you're running on a fresh box with only the volume mounted).
+    """
+    state_servers_dir = get_state_dir() / "servers"
+    if not state_servers_dir.exists():
+        print(f"No state dir at {state_servers_dir}")
+        return
+    rows = []
+    for entry in sorted(state_servers_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        path = entry / "clients.json"
+        if not path.exists():
+            continue
+        try:
+            with open(path) as f:
+                clients = json.load(f)
+            n = len(clients)
+            admins = sum(1 for c in clients.values() if c.get("admin"))
+            rows.append((entry.name, n, admins))
+        except (json.JSONDecodeError, OSError):
+            rows.append((entry.name, None, None))
+    if not rows:
+        print(f"No servers found in {state_servers_dir}")
+        return
+    print(f"State servers ({state_servers_dir}):")
+    for name, n, admins in rows:
+        if n is None:
+            print(f"  {name}  (clients.json unreadable)")
+        else:
+            client_word = "client" if n == 1 else "clients"
+            admin_word = "admin" if admins == 1 else "admins"
+            print(f"  {name}  ({n} {client_word}, {admins} {admin_word})")
+
+
 COMMAND_GROUPS = [
-    ("Server", ["server", "server-setup", "server-add-user"]),
+    ("Server", ["server", "server-setup", "server-add-user", "list-state-servers"]),
     (
         "Client",
         ["connect", "upload", "download", "list", "set-preview", "get-pad", "set-pad", "rotate", "complete-rotation"],
@@ -1996,6 +2155,8 @@ def main():
     add_user_parser.add_argument("--client-id", help="Client ID (auto-generated if blank)")
     add_user_parser.add_argument("--client-secret", help="Client secret (auto-generated if blank)")
     add_user_parser.add_argument("--interactive", action="store_true", help="Prompt for missing fields")
+    # List state servers (diagnostic: which server names have a clients DB on disk)
+    subparsers.add_parser("list-state-servers", help="List server names with a clients DB in the state dir")
     # Connect mode
     connect_parser = subparsers.add_parser("connect", help="Save server connection credentials locally")
     connect_parser.add_argument("--server", help="Server name (default: 'default')")
@@ -2076,6 +2237,8 @@ def main():
         server_setup_cmd(args)
     elif args.mode == "server-add-user":
         server_add_user_cmd(args)
+    elif args.mode == "list-state-servers":
+        list_state_servers_cmd(args)
     elif args.mode == "connect":
         connect_cmd(args)
     elif args.mode == "server":

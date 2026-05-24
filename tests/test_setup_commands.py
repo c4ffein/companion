@@ -65,6 +65,13 @@ def _read_config(tmp_home):
         return json.load(f)
 
 
+def _read_clients(tmp_home, server_name):
+    """Read the per-server clients DB from the (subprocess-default) state dir."""
+    path = Path(tmp_home) / ".local" / "state" / "companion" / "servers" / server_name / "clients.json"
+    with open(path) as f:
+        return json.load(f)
+
+
 class TestServerSetupNonInteractive(unittest.TestCase):
     """server-setup in default (non-interactive) mode."""
 
@@ -87,7 +94,7 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         server = config["servers"]["default"]
         self.assertEqual(server["url"], "http://example.com:8080")
         _assert_client_creds(self, server)
-        self.assertIn(server["client-id"], server["clients"])
+        self.assertIn(server["client-id"], _read_clients(self.tmp_home, "default"))
         self.assertEqual(config["default-server"], "default")
 
     def test_all_flags_uses_exact_values(self):
@@ -113,7 +120,7 @@ class TestServerSetupNonInteractive(unittest.TestCase):
         server = config["servers"]["myserver"]
         self.assertEqual(server["url"], "http://my.host:9090")
         _assert_client_creds(self, server, expected_id="my-id-123", expected_secret="my-secret-456")
-        client = server["clients"]["my-id-123"]
+        client = _read_clients(self.tmp_home, "myserver")["my-id-123"]
         self.assertTrue(client["admin"])
         self.assertEqual(client["name"], "Admin Bob")
 
@@ -152,7 +159,7 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         config = _read_config(self.tmp_home)
         server = config["servers"]["default"]
-        clients = server["clients"]
+        clients = _read_clients(self.tmp_home, "default")
         # Should have 2 clients: the admin from setup + the new user
         self.assertEqual(len(clients), 2)
         # The admin client is keyed by server["client-id"]
@@ -185,8 +192,7 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
             env=self.env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        config = _read_config(self.tmp_home)
-        client = config["servers"]["default"]["clients"]["user-id-abc"]
+        client = _read_clients(self.tmp_home, "default")["user-id-abc"]
         self.assertFalse(client["admin"])
         self.assertEqual(client["name"], "Alice")
 
@@ -198,8 +204,7 @@ class TestServerAddUserNonInteractive(unittest.TestCase):
             env=self.env,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        config = _read_config(self.tmp_home)
-        self.assertTrue(config["servers"]["default"]["clients"]["admin2"]["admin"])
+        self.assertTrue(_read_clients(self.tmp_home, "default")["admin2"]["admin"])
 
 
 class TestServerSetupInteractive(unittest.TestCase):
@@ -218,7 +223,7 @@ class TestServerSetupInteractive(unittest.TestCase):
         server = config["servers"]["myserver"]
         self.assertEqual(server["url"], "http://test.local:5000")
         _assert_client_creds(self, server, expected_id="custom-id", expected_secret="custom-secret")
-        client = server["clients"]["custom-id"]
+        client = _read_clients(self.tmp_home, "myserver")["custom-id"]
         self.assertEqual(client["name"], "My Admin")
 
     def test_blanks_auto_generate(self):
@@ -273,8 +278,7 @@ class TestServerAddUserInteractive(unittest.TestCase):
             stdin_text=stdin_lines,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        config = _read_config(self.tmp_home)
-        client = config["servers"]["default"]["clients"]["new-client-id"]
+        client = _read_clients(self.tmp_home, "default")["new-client-id"]
         self.assertFalse(client["admin"])
         self.assertEqual(client["name"], "New User")
 
@@ -287,8 +291,7 @@ class TestServerAddUserInteractive(unittest.TestCase):
             stdin_text=stdin_lines,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        config = _read_config(self.tmp_home)
-        clients = config["servers"]["default"]["clients"]
+        clients = _read_clients(self.tmp_home, "default")
         self.assertEqual(len(clients), 2)
 
 
