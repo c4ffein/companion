@@ -147,12 +147,18 @@ _INDEX_HTML = """<!DOCTYPE html>
 <head>
     <title>Companion</title>
     <meta charset="utf-8">
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='black'/%3E%3Crect x='156' y='40' width='200' height='432' rx='28' fill='white'/%3E%3C/svg%3E">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='black'/%3E%3Crect x='156' y='40' width='200' height='432' rx='28' fill='white'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.6931e6.png">
     <!-- maximum-scale=1 suppresses iOS's auto-zoom when an input is focused (text <16px would
          otherwise trigger a zoom). iOS still honors this for auto-zoom even though it ignores it
          for *manual* pinch — pinch is disabled separately via touch-action in the CSS below. -->
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <!-- iOS "Add to Home Screen" standalone mode. apple-mobile-web-app-capable is the legacy form
+         iOS still honors; mobile-web-app-capable is the cross-platform standard. -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Companion">
     <link rel="modulepreload" href="/deps/pdf.min.mjs">
     <style>
         [data-theme="light"] {
@@ -323,7 +329,11 @@ _INDEX_HTML = """<!DOCTYPE html>
         </div>
         <div style="margin-bottom: 15px;">
             <label style="display: block; margin-bottom: 5px; font-weight: 600;">Client Secret</label>
-            <input type="password" id="settingsClientSecret" placeholder="Client Secret" style="width: 100%; max-width: 400px;">
+            <div style="display: flex; gap: 6px; max-width: 400px;">
+                <input type="password" id="settingsClientSecret" placeholder="Client Secret" style="flex: 1; min-width: 0;">
+                <button type="button" id="toggleSecretBtn" class="btn-secondary" title="Show/hide secret">Show</button>
+                <button type="button" id="copySecretBtn" class="btn-secondary" title="Copy secret to clipboard">Copy</button>
+            </div>
         </div>
         <div style="margin-bottom: 15px;">
             <button id="saveCredsBtn">Save Credentials</button>
@@ -1074,6 +1084,35 @@ _INDEX_HTML = """<!DOCTYPE html>
         });
 
         document.getElementById('rotateTokenBtn').addEventListener('click', rotateToken);
+
+        document.getElementById('toggleSecretBtn').addEventListener('click', () => {
+            const input = document.getElementById('settingsClientSecret');
+            const btn = document.getElementById('toggleSecretBtn');
+            const showing = input.type === 'text';
+            input.type = showing ? 'password' : 'text';
+            btn.textContent = showing ? 'Show' : 'Hide';
+        });
+
+        document.getElementById('copySecretBtn').addEventListener('click', async () => {
+            const input = document.getElementById('settingsClientSecret');
+            const secret = input.value;
+            if (!secret) { showSettingsStatus('No secret to copy', true); return; }
+            // navigator.clipboard requires a secure context (HTTPS or localhost). On a plain-HTTP
+            // LAN IP it's unavailable, so fall back to selecting the input and execCommand('copy').
+            try {
+                await navigator.clipboard.writeText(secret);
+                showSettingsStatus('Secret copied to clipboard');
+                return;
+            } catch (e) { /* fall through */ }
+            const wasPassword = input.type === 'password';
+            if (wasPassword) input.type = 'text';
+            input.select();
+            input.setSelectionRange(0, 99999);
+            const ok = document.execCommand('copy');
+            if (wasPassword) input.type = 'password';
+            input.blur();
+            showSettingsStatus(ok ? 'Secret copied to clipboard' : 'Copy failed — please copy manually', !ok);
+        });
 
         // Migrate old separate keys to single blob
         const oldId = localStorage.getItem('companion_client_id');
@@ -23866,6 +23905,30 @@ _PDFJS_WORKER = base64.b64decode(
     "V29ya2VyTWVzc2FnZUhhbmRsZXJ9Ow=="
 )
 
+# Icon design — single source of truth. The SVG below is served at /icon.svg
+# (browser favicon points at it) and is also the design that the apple-touch-icon
+# PNG below is rasterized from. Update both together when the design changes.
+_ICON_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<rect x="0" y="0" width="512" height="512" fill="#000000"/>'
+    b'<rect x="176" y="90" width="160" height="333" rx="28" fill="#FFFFFF"/>'
+    b"</svg>"
+)
+
+# iOS "Add to Home Screen" icon. PNG, not SVG: data-URI SVG and real-URL SVG
+# were both tested and iOS Safari refused to display either as the home-screen
+# tile. PNG is what Apple's docs actually specify. 180×180 grayscale, generated
+# offline via stdlib zlib+struct — 234 raw bytes — see commit history for the
+# generator. The base64 below decodes to the PNG bytes at server start.
+_APPLE_TOUCH_ICON_PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAAAAAAYplnuAAABF0lEQVR42u3cIU4DYRCG4SYVFQgEogJR0QMg"
+    b"ERXIlRwAgUQgET0GR6hA9ggViB4AWVlZgURUDnCD3T9pZid53hM8mWTsN5lIkiRJkiRJkvTXvHvu09P91VjE"
+    b"09ev6Nt5+zAK890hBrUZwbVXPzGwfbp6OdgcsctG76Ohl1xz12KO0ywV/dGEjsdU9Hcb+j3TfNNmzn3FRSP6"
+    b"eF0QHQtoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGho"
+    b"aGhoaGhoaGjoS6HPt4nokvMvJYd2ak4alRyPKjnTVXMQreT0XM2Rv5pziv/Nu/Vnj97GM1wpSZIkSZIkScrt"
+    b"F0AGQYL+pz2dAAAAAElFTkSuQmCC"
+)
+
 
 
 
@@ -25037,6 +25100,28 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "public, max-age=31536000")
         self.end_headers()
         self.wfile.write(_PDFJS_WORKER)
+        return None
+
+    @_route("GET", "/icon.svg", auth=Auth.NONE)
+    def _serve_icon_svg(self, client=None, body=None):
+        """Serve the source SVG icon (browser favicon)."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(_ICON_SVG)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(_ICON_SVG)
+        return None
+
+    @_route("GET", "/apple-touch-icon.6931e6.png", auth=Auth.NONE)
+    def _serve_apple_touch_icon(self, client=None, body=None):
+        """Serve the iPhone home-screen icon."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(_APPLE_TOUCH_ICON_PNG)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(_APPLE_TOUCH_ICON_PNG)
         return None
 
     def log_message(self, format, *args):

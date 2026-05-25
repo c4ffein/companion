@@ -72,6 +72,7 @@ Example environment (works alongside config.json, or fully replaces it):
 """
 
 import argparse
+import base64
 import contextlib
 import enum
 import functools
@@ -132,6 +133,30 @@ else:
 _INDEX_HTML = ""
 _PDFJS_LIB = b""
 _PDFJS_WORKER = b""
+
+# Icon design — single source of truth. The SVG below is served at /icon.svg
+# (browser favicon points at it) and is also the design that the apple-touch-icon
+# PNG below is rasterized from. Update both together when the design changes.
+_ICON_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<rect x="0" y="0" width="512" height="512" fill="#000000"/>'
+    b'<rect x="176" y="90" width="160" height="333" rx="28" fill="#FFFFFF"/>'
+    b"</svg>"
+)
+
+# iOS "Add to Home Screen" icon. PNG, not SVG: data-URI SVG and real-URL SVG
+# were both tested and iOS Safari refused to display either as the home-screen
+# tile. PNG is what Apple's docs actually specify. 180×180 grayscale, generated
+# offline via stdlib zlib+struct — 234 raw bytes — see commit history for the
+# generator. The base64 below decodes to the PNG bytes at server start.
+_APPLE_TOUCH_ICON_PNG = base64.b64decode(
+    b"iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAAAAAAYplnuAAABF0lEQVR42u3cIU4DYRCG4SYVFQgEogJR0QMg"
+    b"ERXIlRwAgUQgET0GR6hA9ggViB4AWVlZgURUDnCD3T9pZid53hM8mWTsN5lIkiRJkiRJkvTXvHvu09P91VjE"
+    b"09ev6Nt5+zAK890hBrUZwbVXPzGwfbp6OdgcsctG76Ohl1xz12KO0ywV/dGEjsdU9Hcb+j3TfNNmzn3FRSP6"
+    b"eF0QHQtoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGho"
+    b"aGhoaGhoaGjoS6HPt4nokvMvJYd2ak4alRyPKjnTVXMQreT0XM2Rv5pziv/Nu/Vnj97GM1wpSZIkSZIkScrt"
+    b"F0AGQYL+pz2dAAAAAElFTkSuQmCC"
+)
 
 
 def _load_assets():
@@ -1325,6 +1350,28 @@ class FileShareHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "public, max-age=31536000")
         self.end_headers()
         self.wfile.write(_PDFJS_WORKER)
+        return None
+
+    @_route("GET", "/icon.svg", auth=Auth.NONE)
+    def _serve_icon_svg(self, client=None, body=None):
+        """Serve the source SVG icon (browser favicon)."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(_ICON_SVG)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(_ICON_SVG)
+        return None
+
+    @_route("GET", "/apple-touch-icon.6931e6.png", auth=Auth.NONE)
+    def _serve_apple_touch_icon(self, client=None, body=None):
+        """Serve the iPhone home-screen icon."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(_APPLE_TOUCH_ICON_PNG)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(_APPLE_TOUCH_ICON_PNG)
         return None
 
     def log_message(self, format, *args):

@@ -104,9 +104,6 @@ def build_companion():
     )
     print(f"✅ Inlined pdf.worker.min.mjs ({len(pdf_worker_content):,} bytes)")
 
-    # Add base64 import (needed for the inlined PDF.js constants)
-    source = _replace_or_die(source, "import contextlib\n", "import base64\nimport contextlib\n", "import contextlib")
-
     # Remove _load_assets() function definition
     print("\n🗑️  Removing _load_assets() function and call...")
     source = re.sub(

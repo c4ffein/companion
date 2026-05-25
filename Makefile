@@ -1,4 +1,4 @@
-.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check clean run build verify-build docker-build docker-secret
+.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check check-icon icon clean run build verify-build docker-build docker-secret
 
 # Default target
 help:
@@ -11,7 +11,9 @@ help:
 	@echo "  make test-base64  - Validate base64 format of embedded PDF.js"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make lint         - Lint code with ruff"
-	@echo "  make check        - Run format, lint, and tests"
+	@echo "  make check        - Run format, lint, tests, and icon-sync check"
+	@echo "  make check-icon   - Verify src/ icon assets match tools/gen_icon.py"
+	@echo "  make icon         - Regenerate icon assets from tools/gen_icon.py"
 	@echo "  make build        - Build companion.py with inlined PDF.js"
 	@echo "  make verify-build - Verify that companion.py matches src/companion.py"
 	@echo "  make run          - Start the server (default port 8080)"
@@ -67,8 +69,16 @@ lint:
 	@echo "Linting code..."
 	ruff check src/companion.py tests/ build.py
 
-# Run all checks (format, lint, test)
-check: format lint test
+# Regenerate icon assets (SVG + PNG + cache-bust suffix) from tools/gen_icon.py
+icon:
+	@python3 tools/gen_icon.py
+
+# Verify the icon assets in src/ match what tools/gen_icon.py would generate
+check-icon:
+	@python3 tools/gen_icon.py --check
+
+# Run all checks (format, lint, test, icon-sync)
+check: format lint test check-icon
 	@echo "✅ All checks passed!"
 
 # Start the server (development version from src/)
