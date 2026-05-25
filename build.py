@@ -48,6 +48,19 @@ def _replace_or_die(source: str, old: str, new: str, label: str) -> str:
     return source.replace(old, new, 1)
 
 
+def _format_b64_constant(name: str, b64: str) -> str:
+    """Build a multi-line `<name> = base64.b64decode(\\n    "..."\\n    "..."\\n)`.
+
+    Each ~84-char base64 chunk gets its own Python string literal, all joined
+    by implicit concatenation. Keeps git hunks small around the embedded
+    PDF.js blobs (otherwise each blob is a single ~530K-char line).
+    """
+    import textwrap
+
+    body = "\n".join(f'    "{line}"' for line in textwrap.wrap(b64, 84))
+    return f"{name} = base64.b64decode(\n{body}\n)"
+
+
 def build_companion():
     """Build companion.py with inlined assets"""
     print("🔨 Building Companion with inlined assets...\n")
@@ -79,14 +92,14 @@ def build_companion():
     source = _replace_or_die(
         source,
         '_PDFJS_LIB = b""',
-        f'_PDFJS_LIB = base64.b64decode("{pdf_js_b64}")',
+        _format_b64_constant("_PDFJS_LIB", pdf_js_b64),
         '_PDFJS_LIB = b""',
     )
     print(f"✅ Inlined pdf.min.mjs ({len(pdf_js_content):,} bytes)")
     source = _replace_or_die(
         source,
         '_PDFJS_WORKER = b""',
-        f'_PDFJS_WORKER = base64.b64decode("{pdf_worker_b64}")',
+        _format_b64_constant("_PDFJS_WORKER", pdf_worker_b64),
         '_PDFJS_WORKER = b""',
     )
     print(f"✅ Inlined pdf.worker.min.mjs ({len(pdf_worker_content):,} bytes)")

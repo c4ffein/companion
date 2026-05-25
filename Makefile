@@ -45,23 +45,15 @@ test-browser:
 
 # Validate base64 format of embedded PDF.js libraries
 test-base64:
-	@python3 -c "import sys; \
-from pathlib import Path; \
+	@python3 -c "import sys, re; \
+src = open('companion.py').read() if __import__('pathlib').Path('companion.py').exists() else (print('❌ companion.py not found. Run make build first.') or sys.exit(1)); \
+b64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='); \
 print('🔍 Validating base64 format of embedded PDF.js...'); \
-path = Path('companion.py'); \
-not path.exists() and (print('❌ companion.py not found. Run make build first.') or sys.exit(1)); \
-lines = path.read_text().split('\n'); \
-base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='); \
-[(print(f'📋 Checking {var} format...'), \
-  (count := len([line for line in lines if line.startswith(var)])), \
-  (print(f'❌ Found {count} lines starting with {var}, expected exactly 1') or sys.exit(1)) if count != 1 else None, \
-  (matching := [line for line in lines if line.startswith(var)][0]), \
-  (prefix := f'{var} = base64.b64decode(\"'), \
-  (print(f'❌ {var} line must start with {repr(prefix)}') or sys.exit(1)) if not matching.startswith(prefix) else None, \
-  (print(f'❌ {var} line must end with \")\"') or sys.exit(1)) if not matching.endswith('\")') else None, \
-  (content := matching[len(prefix):-2]), \
-  (print(f'❌ {var} contains invalid base64 characters') or print(f'   Got: {content[:80]}...') or sys.exit(1)) if not all(c in base64_chars for c in content) else None, \
-  print(f'✅ {var} format valid')) \
+[(m := re.search(rf'{var} = base64\.b64decode\(\n((?:    \"[A-Za-z0-9+/=]*\"\n)+)\)', src), \
+  (print(f'❌ {var} block not found or malformed') or sys.exit(1)) if not m else None, \
+  (joined := ''.join(re.findall(r'\"([^\"]*)\"', m.group(1)))), \
+  (print(f'❌ {var} contains invalid base64 characters') or sys.exit(1)) if not all(c in b64_chars for c in joined) else None, \
+  print(f'✅ {var} format valid ({len(joined):,} base64 chars)')) \
 for var in ['_PDFJS_LIB', '_PDFJS_WORKER']]; \
 print('🎉 All base64 format checks passed!')"
 
