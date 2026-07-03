@@ -1,4 +1,4 @@
-.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check check-icon icon clean run build verify-build docker-build docker-secret
+.PHONY: help test test-dev test-built test-all test-browser test-base64 format lint check verify check-icon icon clean run build verify-build docker-build docker-secret
 
 # Default target
 help:
@@ -12,6 +12,7 @@ help:
 	@echo "  make format       - Format code with ruff"
 	@echo "  make lint         - Lint code with ruff"
 	@echo "  make check        - Run format, lint, tests, and icon-sync check"
+	@echo "  make verify       - Alias for 'make check' (collection-standard gate)"
 	@echo "  make check-icon   - Verify src/ icon assets match tools/gen_icon.py"
 	@echo "  make icon         - Regenerate icon assets from tools/gen_icon.py"
 	@echo "  make build        - Build companion.py with inlined PDF.js"
@@ -62,12 +63,12 @@ print('🎉 All base64 format checks passed!')"
 # Format code with ruff
 format:
 	@echo "Formatting code..."
-	ruff format src/companion.py tests/ build.py
+	uvx ruff format src/companion.py tests/ build.py
 
 # Lint code with ruff
 lint:
 	@echo "Linting code..."
-	ruff check src/companion.py tests/ build.py
+	uvx ruff check src/companion.py tests/ build.py
 
 # Regenerate icon assets (SVG + PNG + cache-bust suffix) from tools/gen_icon.py
 icon:
@@ -80,6 +81,9 @@ check-icon:
 # Run all checks (format, lint, test, icon-sync)
 check: format lint test check-icon
 	@echo "✅ All checks passed!"
+
+# Alias for the collection-standard gate name (see workspace CLAUDE.md)
+verify: check
 
 # Start the server (development version from src/)
 run:

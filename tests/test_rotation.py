@@ -522,11 +522,14 @@ class _RotateCmdTestBase(unittest.TestCase):
         server_clients = self._server_clients()
         captured = io.StringIO()
 
-        with patch("companion.load_config", return_value=config), patch(
-            "companion._config_locked", lambda: _fake_config_locked(config)
-        ), patch("companion._clients_locked", lambda server_name: _fake_clients_locked(server_clients)), patch.object(
-            companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None
-        ), patch("sys.stdout", captured), patch("sys.stderr", captured):
+        with (
+            patch("companion.load_config", return_value=config),
+            patch("companion._config_locked", lambda: _fake_config_locked(config)),
+            patch("companion._clients_locked", lambda server_name: _fake_clients_locked(server_clients)),
+            patch.object(companion.FileShareHandler, "log_message", lambda self_, fmt, *a: None),
+            patch("sys.stdout", captured),
+            patch("sys.stderr", captured),
+        ):
             try:
                 mock_args = type("Args", (), {"server": self.server_name, "url": None, "auth_token": None})()
                 cmd_func(mock_args)
